@@ -67,7 +67,6 @@ import com.mishiranu.dashchan.ui.posting.Replyable;
 import com.mishiranu.dashchan.util.AndroidUtils;
 import com.mishiranu.dashchan.util.ConcurrentUtils;
 import com.mishiranu.dashchan.util.ListViewUtils;
-import com.mishiranu.dashchan.util.Log;
 import com.mishiranu.dashchan.util.ResourceUtils;
 import com.mishiranu.dashchan.util.SearchHelper;
 import com.mishiranu.dashchan.util.ViewUtils;
@@ -79,6 +78,7 @@ import com.mishiranu.dashchan.widget.PostsLayoutManager;
 import com.mishiranu.dashchan.widget.PullableWrapper;
 import com.mishiranu.dashchan.widget.SummaryLayout;
 import java.io.IOException;
+import java.lang.ref.WeakReference;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
@@ -89,7 +89,7 @@ import java.util.Locale;
 import java.util.Set;
 
 public class PostsPage extends ListPage implements PostsAdapter.Callback, FavoritesStorage.Observer,
-		UiManager.Observer, ExtractPostsTask.Callback, WatcherService.Session.Callback, ActionMode.Callback {
+		UiManager.Observer, ExtractPostsTask.Callback, WatcherService.Session.Callback {
 	private static class RetainableExtra implements Retainable {
 		public static final ExtraFactory<RetainableExtra> FACTORY = RetainableExtra::new;
 
@@ -706,7 +706,7 @@ public class PostsPage extends ListPage implements PostsAdapter.Callback, Favori
 				return true;
 			}
 			case R.id.menu_select: {
-				selectionMode = startActionMode(this);
+				selectionMode = startActionMode(new SelectionCallback(this));
 				return true;
 			}
 			case R.id.menu_refresh: {
@@ -741,8 +741,8 @@ public class PostsPage extends ListPage implements PostsAdapter.Callback, Favori
 			case R.id.menu_star_text:
 			case R.id.menu_star_icon: {
 				ParcelableExtra parcelableExtra = getParcelableExtra(ParcelableExtra.FACTORY);
-				FavoritesStorage.getInstance().add(page.chanName, page.boardName,
-						page.threadNumber, parcelableExtra.threadTitle);
+				FavoritesStorage.getInstance().add(page.chanName, page.boardName, page.threadNumber,
+						parcelableExtra.threadTitle, true);
 				updateOptionsMenu();
 				return true;
 			}
@@ -775,10 +775,8 @@ public class PostsPage extends ListPage implements PostsAdapter.Callback, Favori
 					}
 					posts.add(postItem.getPost());
 				}
-				if (!posts.isEmpty()) {
-					getUiManager().dialog().performSendArchiveThread(getFragmentManager(),
-							page.chanName, page.boardName, page.threadNumber, threadTitle, posts);
-				}
+				getUiManager().dialog().performSendArchiveThread(getFragmentManager(),
+						page.chanName, page.boardName, page.threadNumber, threadTitle, posts);
 				return true;
 			}
 		}
@@ -921,8 +919,7 @@ public class PostsPage extends ListPage implements PostsAdapter.Callback, Favori
 		}
 	}
 
-	@Override
-	public boolean onCreateActionMode(ActionMode mode, Menu menu) {
+	private boolean onCreateSelection(ActionMode mode, Menu menu) {
 		Page page = getPage();
 		Chan chan = getChan();
 		getAdapter().setSelectionModeEnabled(true);
@@ -956,13 +953,7 @@ public class PostsPage extends ListPage implements PostsAdapter.Callback, Favori
 		return true;
 	}
 
-	@Override
-	public boolean onPrepareActionMode(ActionMode mode, Menu menu) {
-		return false;
-	}
-
-	@Override
-	public boolean onActionItemClicked(ActionMode mode, MenuItem item) {
+	private boolean onSelectionItemSelected(ActionMode mode, MenuItem item) {
 		PostsAdapter adapter = getAdapter();
 		switch (item.getItemId()) {
 			case R.id.menu_make_threadshot: {
@@ -1023,8 +1014,7 @@ public class PostsPage extends ListPage implements PostsAdapter.Callback, Favori
 		return false;
 	}
 
-	@Override
-	public void onDestroyActionMode(ActionMode mode) {
+	private void onDestroySelection() {
 		getAdapter().setSelectionModeEnabled(false);
 		selectionMode = null;
 	}
@@ -1162,6 +1152,7 @@ public class PostsPage extends ListPage implements PostsAdapter.Callback, Favori
 
 	@Override
 	public void onListPulled(PullableWrapper wrapper, PullableWrapper.Side side) {
+		switchList();
 		refreshPostsWithoutIndication(false);
 	}
 
@@ -1204,7 +1195,7 @@ public class PostsPage extends ListPage implements PostsAdapter.Callback, Favori
 					}
 				}
 			} catch (ParseException e) {
-				Log.persistent().stack(e);
+				e.printStackTrace();
 				retainableExtra.threadExtra = null;
 			} catch (IOException e) {
 				throw new RuntimeException(e);
@@ -1214,7 +1205,7 @@ public class PostsPage extends ListPage implements PostsAdapter.Callback, Favori
 			try {
 				hidePerformer.decodeLocalFilters(null);
 			} catch (ParseException e) {
-				Log.persistent().stack(e);
+				e.printStackTrace();
 			} catch (IOException e) {
 				throw new RuntimeException(e);
 			}
@@ -1276,7 +1267,7 @@ public class PostsPage extends ListPage implements PostsAdapter.Callback, Favori
 					}
 				}
 			} catch (ParseException e) {
-				Log.persistent().stack(e);
+				e.printStackTrace();
 			} catch (IOException e) {
 				throw new RuntimeException(e);
 			}
@@ -1701,7 +1692,7 @@ public class PostsPage extends ListPage implements PostsAdapter.Callback, Favori
 					adapter.toggleItemSelected(postItem);
 				}
 			}
-			selectionMode = startActionMode(this);
+			selectionMode = startActionMode(new SelectionCallback(this));
 		}
 
 		updateOptionsMenu();
@@ -1827,6 +1818,39 @@ public class PostsPage extends ListPage implements PostsAdapter.Callback, Favori
 		int position = adapter.positionOfPostNumber(attachmentItem.getPostNumber());
 		if (position >= 0) {
 			adapter.reloadAttachment(position, attachmentItem);
+		}
+	}
+
+	private static class SelectionCallback implements ActionMode.Callback {
+		private final WeakReference<PostsPage> postsPage;
+
+		public SelectionCallback(PostsPage postsPage) {
+			this.postsPage = new WeakReference<>(postsPage);
+		}
+
+		@Override
+		public boolean onCreateActionMode(ActionMode mode, Menu menu) {
+			PostsPage postsPage = this.postsPage.get();
+			return postsPage != null && postsPage.onCreateSelection(mode, menu);
+		}
+
+		@Override
+		public boolean onPrepareActionMode(ActionMode mode, Menu menu) {
+			return false;
+		}
+
+		@Override
+		public boolean onActionItemClicked(ActionMode mode, MenuItem item) {
+			PostsPage postsPage = this.postsPage.get();
+			return postsPage != null && postsPage.onSelectionItemSelected(mode, item);
+		}
+
+		@Override
+		public void onDestroyActionMode(ActionMode mode) {
+			PostsPage postsPage = this.postsPage.get();
+			if (postsPage != null) {
+				postsPage.onDestroySelection();
+			}
 		}
 	}
 

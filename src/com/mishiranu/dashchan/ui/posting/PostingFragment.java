@@ -20,6 +20,7 @@ import android.media.MediaMetadataRetriever;
 import android.net.Uri;
 import android.os.Bundle;
 import android.os.IBinder;
+import android.os.ParcelFileDescriptor;
 import android.os.SystemClock;
 import android.text.Editable;
 import android.text.TextUtils;
@@ -28,12 +29,10 @@ import android.util.Pair;
 import android.view.Gravity;
 import android.view.LayoutInflater;
 import android.view.Menu;
-import android.view.MenuInflater;
 import android.view.MenuItem;
 import android.view.View;
 import android.view.ViewGroup;
 import android.view.ViewOutlineProvider;
-import android.view.ViewTreeObserver;
 import android.view.inputmethod.InputMethodManager;
 import android.widget.Button;
 import android.widget.CheckBox;
@@ -81,7 +80,6 @@ import com.mishiranu.dashchan.ui.posting.text.NameEditWatcher;
 import com.mishiranu.dashchan.ui.posting.text.QuoteEditWatcher;
 import com.mishiranu.dashchan.util.ConcurrentUtils;
 import com.mishiranu.dashchan.util.GraphicsUtils;
-import com.mishiranu.dashchan.util.IOUtils;
 import com.mishiranu.dashchan.util.ResourceUtils;
 import com.mishiranu.dashchan.util.ViewUtils;
 import com.mishiranu.dashchan.widget.ClickableToast;
@@ -248,7 +246,7 @@ public class PostingFragment extends ContentFragment implements FragmentHandler.
 		attachmentContainer = view.findViewById(R.id.attachment_container);
 		FrameLayout footerContainer = view.findViewById(R.id.footer_container);
 		int[] oldScrollViewHeight = {-1};
-		scrollView.getViewTreeObserver().addOnGlobalLayoutListener(() -> {
+		scrollView.addOnLayoutChangeListener((v, left, top, right, bottom, oldLeft, oldTop, oldRight, oldBottom) -> {
 			if (scrollView != null) {
 				int scrollViewHeight = scrollView.getHeight();
 				if (scrollViewHeight != oldScrollViewHeight[0]) {
@@ -276,6 +274,7 @@ public class PostingFragment extends ContentFragment implements FragmentHandler.
 		}
 		nameView.addTextChangedListener(new NameEditWatcher(postingConfiguration.allowName &&
 				!postingConfiguration.allowTripcode, nameView, tripcodeWarning, () -> resizeComment(true)));
+		ViewUtils.applyMonospaceTypeface(passwordView);
 		if (!C.API_LOLLIPOP) {
 			ViewUtils.setNewMargin(iconView, (int) (4f * density), 0, (int) (4f * density), 0);
 		}
@@ -644,7 +643,6 @@ public class PostingFragment extends ContentFragment implements FragmentHandler.
 	public void onActivityCreated(Bundle savedInstanceState) {
 		super.onActivityCreated(savedInstanceState);
 
-		setHasOptionsMenu(true);
 		((FragmentHandler) requireActivity()).setTitleSubtitle(getString(StringUtils.isEmpty(getThreadNumber())
 				? R.string.new_thread : R.string.new_post), null);
 		requireActivity().bindService(new Intent(requireContext(), PostingService.class),
@@ -821,7 +819,7 @@ public class PostingFragment extends ContentFragment implements FragmentHandler.
 			}
 			invalidateAttachments(attachmentCount);
 			if (attachmentCount) {
-				requireActivity().invalidateOptionsMenu();
+				invalidateOptionsMenu();
 			}
 		}
 	}
@@ -879,14 +877,14 @@ public class PostingFragment extends ContentFragment implements FragmentHandler.
 	}
 
 	@Override
-	public void onCreateOptionsMenu(@NonNull Menu menu, @NonNull MenuInflater inflater) {
+	public void onCreateOptionsMenu(Menu menu, boolean primary) {
 		menu.add(0, R.id.menu_attach, 0, R.string.attach)
 				.setIcon(((FragmentHandler) requireActivity()).getActionBarIcon(R.attr.iconActionAttach))
 				.setShowAsAction(MenuItem.SHOW_AS_ACTION_ALWAYS);
 	}
 
 	@Override
-	public void onPrepareOptionsMenu(Menu menu) {
+	public void onPrepareOptionsMenu(Menu menu, boolean primary) {
 		menu.findItem(R.id.menu_attach).setVisible(attachments.size() < postingConfiguration.attachmentCount);
 	}
 
@@ -1271,7 +1269,7 @@ public class PostingFragment extends ContentFragment implements FragmentHandler.
 					}
 					ArrayList<Pair<String, String>> attachmentsToAdd = new ArrayList<>();
 					for (Uri uri : uris) {
-						FileHolder fileHolder = FileHolder.obtain(requireContext(), uri);
+						FileHolder fileHolder = FileHolder.obtain(uri);
 						if (fileHolder != null) {
 							String hash = DraftsStorage.getInstance().store(fileHolder);
 							if (hash != null) {
@@ -1347,7 +1345,7 @@ public class PostingFragment extends ContentFragment implements FragmentHandler.
 				} else {
 					invalidateAttachments(true);
 				}
-				requireActivity().invalidateOptionsMenu();
+				invalidateOptionsMenu();
 				resizeComment(true);
 				DraftsStorage.getInstance().store(obtainPostDraft());
 			}
@@ -1505,7 +1503,7 @@ public class PostingFragment extends ContentFragment implements FragmentHandler.
 		removeButton.setTag(holder);
 		options.setTag(holder);
 		attachments.add(holder);
-		requireActivity().invalidateOptionsMenu();
+		invalidateOptionsMenu();
 		resizeComment(true);
 		return holder;
 	}
@@ -1539,26 +1537,21 @@ public class PostingFragment extends ContentFragment implements FragmentHandler.
 				try {
 					bitmap = fileHolder.readImageBitmap(targetImageSize, false, false);
 				} catch (OutOfMemoryError e) {
-					// Ignore exception
+					// Ignore
 				}
 				fileSize += " " + fileHolder.getImageWidth() + '×' + fileHolder.getImageHeight();
 			}
 			if (bitmap == null) {
 				if (Chan.getFallback().locator.isVideoExtension(fileHolder.getName())) {
 					MediaMetadataRetriever retriever = new MediaMetadataRetriever();
-					FileHolder.Descriptor descriptor = null;
-					try {
-						descriptor = fileHolder.openDescriptor();
+					try (ParcelFileDescriptor descriptor = fileHolder.openFileDescriptor()) {
 						retriever.setDataSource(descriptor.getFileDescriptor());
 						Bitmap fullBitmap = retriever.getFrameAtTime(-1);
 						if (fullBitmap != null) {
 							bitmap = GraphicsUtils.reduceBitmapSize(fullBitmap, targetImageSize, true);
 						}
 					} catch (Exception | OutOfMemoryError e) {
-						// Ignore exception
-					} finally {
-						retriever.release();
-						IOUtils.close(descriptor);
+						e.printStackTrace();
 					}
 				}
 			}
@@ -1635,19 +1628,20 @@ public class PostingFragment extends ContentFragment implements FragmentHandler.
 		}
 	};
 
-	private class MarkupButtonsBuilder implements ViewTreeObserver.OnGlobalLayoutListener, Runnable {
+	private class MarkupButtonsBuilder implements View.OnLayoutChangeListener, Runnable {
 		private final boolean addPaddingToRoot;
 		private int lastWidth;
 
 		public MarkupButtonsBuilder(boolean addPaddingToRoot, int initialWidth) {
 			this.addPaddingToRoot = addPaddingToRoot;
-			textFormatView.getViewTreeObserver().addOnGlobalLayoutListener(this);
+			textFormatView.addOnLayoutChangeListener(this);
 			lastWidth = initialWidth;
 			fillContainer();
 		}
 
 		@Override
-		public void onGlobalLayout() {
+		public void onLayoutChange(View v, int left, int top, int right, int bottom,
+				int oldLeft, int oldTop, int oldRight, int oldBottom) {
 			if (textFormatView != null) {
 				int width = textFormatView.getWidth();
 				if (lastWidth != width) {

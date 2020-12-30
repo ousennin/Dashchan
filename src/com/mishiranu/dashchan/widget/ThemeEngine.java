@@ -13,7 +13,6 @@ import android.view.ContextThemeWrapper;
 import android.view.LayoutInflater;
 import android.view.View;
 import android.view.ViewGroup;
-import android.view.ViewParent;
 import android.widget.AbsSeekBar;
 import android.widget.Button;
 import android.widget.CheckedTextView;
@@ -37,7 +36,6 @@ import com.mishiranu.dashchan.graphics.ColorScheme;
 import com.mishiranu.dashchan.graphics.ThemeChoiceDrawable;
 import com.mishiranu.dashchan.util.GraphicsUtils;
 import com.mishiranu.dashchan.util.IOUtils;
-import com.mishiranu.dashchan.util.Log;
 import com.mishiranu.dashchan.util.ResourceUtils;
 import com.mishiranu.dashchan.util.ViewUtils;
 import com.mishiranu.dashchan.util.WeakIterator;
@@ -228,6 +226,11 @@ public class ThemeEngine {
 				return null;
 			}
 		}
+
+		@Override
+		public void onFinished() {
+			mutableItem.decorView = null;
+		}
 	}
 
 	private static class ThemeContext extends ContextWrapper {
@@ -319,19 +322,6 @@ public class ThemeEngine {
 		}
 	}
 
-	private static View getDecorView(View view) {
-		View decorView = view;
-		while (true) {
-			ViewParent viewParent = decorView.getParent();
-			if (viewParent instanceof View) {
-				decorView = (View) viewParent;
-			} else {
-				break;
-			}
-		}
-		return decorView;
-	}
-
 	private interface AttachListener extends View.OnAttachStateChangeListener {
 		boolean isProcessed();
 		void handleView(View view);
@@ -365,7 +355,7 @@ public class ThemeEngine {
 		public void handleView(View view) {
 			if (!processed) {
 				processed = true;
-				View decorView = getDecorView(view);
+				View decorView = ViewUtils.getDecorView(view);
 				if ("DecorView".equals(decorView.getClass().getSimpleName())) {
 					ThemeContext themeContext = obtainThemeContext(decorView.getContext());
 					if (themeContext != null) {
@@ -376,16 +366,11 @@ public class ThemeEngine {
 						boolean forceDialog = tag instanceof Boolean && (boolean) tag;
 						boolean dialog = this.dialog || forceDialog;
 						themeContext.dispatchOverlayFocused(decorView, direct, dialog);
-						ViewGroup viewGroup = (ViewGroup) decorView;
-						viewGroup.addView(new View(decorView.getContext()) {
-							@Override
-							public void onWindowFocusChanged(boolean hasWindowFocus) {
-								super.onWindowFocusChanged(hasWindowFocus);
-								if (hasWindowFocus) {
-									themeContext.dispatchOverlayFocused(decorView, direct, dialog);
-								}
+						ViewUtils.addWindowFocusListener(decorView, (v, hasFocus) -> {
+							if (hasFocus) {
+								themeContext.dispatchOverlayFocused(decorView, direct, dialog);
 							}
-						}, 0, 0);
+						});
 					}
 				}
 			}
@@ -401,7 +386,7 @@ public class ThemeEngine {
 
 		@Override
 		public void handleView(View view) {
-			View decorView = getDecorView(view);
+			View decorView = ViewUtils.getDecorView(view);
 			Object tag = decorView.getTag(R.id.tag_theme_engine);
 			if (tag == null || !((boolean) tag)) {
 				// Mark as handled
@@ -613,6 +598,14 @@ public class ThemeEngine {
 					if (view instanceof EditText) {
 						if (C.API_LOLLIPOP_MR1) {
 							view.setBackgroundTintList(themeContext.getEditTextColors());
+						} else {
+							// Fix weird EditText padding on Android 5.0
+							float density = ResourceUtils.obtainDensity(view);
+							if ((int) (view.getPaddingTop() / density) == 4 &&
+									(int) (view.getPaddingBottom() / density) == 13) {
+								view.setPadding(view.getPaddingLeft(), (int) (11f * density + 0.5f),
+										view.getPaddingRight(), (int) (10f * density + 0.5f));
+							}
 						}
 					} else if (view instanceof CheckedTextView) {
 						// Mostly used by alert dialogs to display lists
@@ -650,10 +643,6 @@ public class ThemeEngine {
 					}
 				} else if (view instanceof ScrollView) {
 					ViewUtils.setEdgeEffectColor((ScrollView) view, theme.accent);
-				} else if (view instanceof DropdownView) {
-					if (C.API_LOLLIPOP_MR1) {
-						view.setBackgroundTintList(themeContext.getEditTextColors());
-					}
 				}
 			}
 			handleTag(theme, view);
@@ -817,7 +806,7 @@ public class ThemeEngine {
 		try {
 			return parseThemeInternal(context, jsonObject, false);
 		} catch (JSONException e) {
-			Log.persistent().stack(e);
+			e.printStackTrace();
 			return null;
 		}
 	}

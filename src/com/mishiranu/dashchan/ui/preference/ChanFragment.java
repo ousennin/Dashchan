@@ -1,7 +1,6 @@
 package com.mishiranu.dashchan.ui.preference;
 
 import android.content.Intent;
-import android.content.SharedPreferences;
 import android.net.Uri;
 import android.os.Bundle;
 import android.text.InputType;
@@ -26,13 +25,13 @@ import com.mishiranu.dashchan.content.async.HttpHolderTask;
 import com.mishiranu.dashchan.content.async.TaskViewModel;
 import com.mishiranu.dashchan.content.database.ChanDatabase;
 import com.mishiranu.dashchan.content.model.ErrorItem;
-import com.mishiranu.dashchan.content.net.RelayBlockResolver;
 import com.mishiranu.dashchan.ui.FragmentHandler;
 import com.mishiranu.dashchan.ui.preference.core.CheckPreference;
 import com.mishiranu.dashchan.ui.preference.core.MultipleEditPreference;
 import com.mishiranu.dashchan.ui.preference.core.Preference;
 import com.mishiranu.dashchan.ui.preference.core.PreferenceFragment;
 import com.mishiranu.dashchan.util.ConcurrentUtils;
+import com.mishiranu.dashchan.util.SharedPreferences;
 import com.mishiranu.dashchan.widget.ClickableToast;
 import com.mishiranu.dashchan.widget.ProgressDialog;
 import java.util.ArrayList;
@@ -202,7 +201,6 @@ public class ChanFragment extends PreferenceFragment implements FragmentHandler.
 				values.set(0, "");
 				Preference<String> domainPreference = addList(Preferences.KEY_DOMAIN.bind(chanName), values,
 						values.get(0), R.string.domain_name, entries);
-				domainPreference.setOnAfterChangeListener(p -> clearSpecialCookies());
 				domainPreference.setOnBeforeChangeListener((preference, value) -> {
 					if (VALUE_CUSTOM_DOMAIN.equals(value)) {
 						anotherDomainMode = true;
@@ -218,8 +216,7 @@ public class ChanFragment extends PreferenceFragment implements FragmentHandler.
 		}
 		if (httpsConfigurable) {
 			addCheck(true, Preferences.KEY_USE_HTTPS.bind(chanName), Preferences.DEFAULT_USE_HTTPS,
-					R.string.secure_connection, R.string.secure_connection__summary)
-					.setOnAfterChangeListener(p -> clearSpecialCookies());
+					R.string.secure_connection, R.string.secure_connection__summary);
 		}
 		if (!localMode) {
 			MultipleEditPreference<Map<String, String>> proxyPreference = addMultipleEdit
@@ -309,22 +306,9 @@ public class ChanFragment extends PreferenceFragment implements FragmentHandler.
 		}
 	}
 
-	private void clearSpecialCookies() {
-		Chan chan = Chan.get(getChanName());
-		Map<String, String> cookies = RelayBlockResolver.getInstance().getCookies(chan);
-		if (!cookies.isEmpty()) {
-			for (String cookie : cookies.keySet()) {
-				chan.configuration.storeCookie(cookie, null, null);
-			}
-			chan.configuration.commit();
-		}
-		removeCookiePreferenceIfNotNeeded();
-	}
-
 	private Preference<String> addAnotherDomainPreference(String primaryDomain) {
 		Preference<String> preference = addEdit(Preferences.KEY_DOMAIN.bind(getChanName()), "",
 				R.string.domain_name, primaryDomain, InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_URI);
-		preference.setOnAfterChangeListener(p -> clearSpecialCookies());
 		preference.setOnBeforeChangeListener((p, value) -> {
 			if (primaryDomain.equals(value)) {
 				p.setValue("");

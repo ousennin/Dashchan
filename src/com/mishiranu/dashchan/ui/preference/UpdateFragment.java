@@ -8,15 +8,12 @@ import android.text.SpannableString;
 import android.text.SpannableStringBuilder;
 import android.text.style.AbsoluteSizeSpan;
 import android.text.style.ForegroundColorSpan;
-import android.view.Gravity;
 import android.view.LayoutInflater;
 import android.view.Menu;
-import android.view.MenuInflater;
 import android.view.MenuItem;
 import android.view.View;
 import android.view.ViewGroup;
 import android.widget.FrameLayout;
-import android.widget.ProgressBar;
 import android.widget.TextView;
 import androidx.annotation.NonNull;
 import androidx.fragment.app.DialogFragment;
@@ -46,7 +43,6 @@ import com.mishiranu.dashchan.widget.ClickableToast;
 import com.mishiranu.dashchan.widget.DividerItemDecoration;
 import com.mishiranu.dashchan.widget.ExpandedLayout;
 import com.mishiranu.dashchan.widget.SimpleViewHolder;
-import com.mishiranu.dashchan.widget.ThemeEngine;
 import com.mishiranu.dashchan.widget.ViewFactory;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -138,8 +134,8 @@ public class UpdateFragment extends BaseListFragment {
 				}
 			}
 		}
-		((FragmentHandler) requireActivity()).setTitleSubtitle(count <= 0 ? getString(R.string.updates__genitive)
-				: ResourceUtils.getColonString(getResources(), R.string.updates__genitive, count), null);
+		((FragmentHandler) requireActivity()).setTitleSubtitle(count <= 0 ? getString(R.string.updates)
+				: ResourceUtils.getColonString(getResources(), R.string.updates, count), null);
 	}
 
 	private boolean isUpdateDataProvided() {
@@ -150,14 +146,7 @@ public class UpdateFragment extends BaseListFragment {
 	@Override
 	public View onCreateView(@NonNull LayoutInflater inflater, ViewGroup container, Bundle savedInstanceState) {
 		ExpandedLayout layout = (ExpandedLayout) super.onCreateView(inflater, container, savedInstanceState);
-		FrameLayout progress = new FrameLayout(layout.getContext());
-		layout.addView(progress, ExpandedLayout.LayoutParams.MATCH_PARENT, ExpandedLayout.LayoutParams.MATCH_PARENT);
-		progress.setVisibility(View.GONE);
-		progressView = progress;
-		ProgressBar progressBar = new ProgressBar(progress.getContext());
-		progress.addView(progressBar, FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT);
-		((FrameLayout.LayoutParams) progressBar.getLayoutParams()).gravity = Gravity.CENTER;
-		ThemeEngine.applyStyle(progressBar);
+		progressView = ViewFactory.createProgressLayout(layout);
 		return layout;
 	}
 
@@ -171,7 +160,6 @@ public class UpdateFragment extends BaseListFragment {
 	public void onActivityCreated(Bundle savedInstanceState) {
 		super.onActivityCreated(savedInstanceState);
 
-		setHasOptionsMenu(true);
 		if (isUpdateDataProvided()) {
 			updateDataMap = requireArguments().getParcelable(EXTRA_UPDATE_DATA_MAP);
 		} else {
@@ -417,7 +405,7 @@ public class UpdateFragment extends BaseListFragment {
 	}
 
 	@Override
-	public void onCreateOptionsMenu(@NonNull Menu menu, @NonNull MenuInflater inflater) {
+	public void onCreateOptionsMenu(Menu menu, boolean primary) {
 		menu.add(0, R.id.menu_download, 0, R.string.download_files)
 				.setIcon(((FragmentHandler) requireActivity()).getActionBarIcon(R.attr.iconActionDownload))
 				.setShowAsAction(MenuItem.SHOW_AS_ACTION_IF_ROOM);
@@ -425,7 +413,7 @@ public class UpdateFragment extends BaseListFragment {
 	}
 
 	@Override
-	public void onPrepareOptionsMenu(@NonNull Menu menu) {
+	public void onPrepareOptionsMenu(Menu menu, boolean primary) {
 		long length = 0;
 		RecyclerView recyclerView = getRecyclerView();
 		if (updateDataMap != null && recyclerView != null) {
@@ -460,7 +448,8 @@ public class UpdateFragment extends BaseListFragment {
 									.packageItems.get(listItem.targetIndex);
 							if (packageItem.source != null) {
 								requests.add(new UpdaterActivity.Request(listItem.extensionName,
-										packageItem.versionName, packageItem.source, packageItem.sha256sum));
+										packageItem.versionName, packageItem.source,
+										packageItem.sha256sum, packageItem.fingerprints));
 							}
 						}
 					}
@@ -539,7 +528,7 @@ public class UpdateFragment extends BaseListFragment {
 					listItem.setTarget(requireContext(), applicationItem, targetIndex);
 					onTargetChanged(requireContext(), adapter, updateDataMap, listItem);
 					adapter.notifyDataSetChanged();
-					requireActivity().invalidateOptionsMenu();
+					invalidateOptionsMenu();
 					updateTitle();
 				}
 				break;

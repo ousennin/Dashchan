@@ -9,7 +9,6 @@ import android.content.ComponentName;
 import android.content.Context;
 import android.content.Intent;
 import android.content.ServiceConnection;
-import android.content.SharedPreferences;
 import android.content.res.Configuration;
 import android.graphics.drawable.ColorDrawable;
 import android.net.Uri;
@@ -21,6 +20,7 @@ import android.provider.DocumentsContract;
 import android.util.Pair;
 import android.view.ActionMode;
 import android.view.ContextThemeWrapper;
+import android.view.KeyEvent;
 import android.view.Menu;
 import android.view.MenuItem;
 import android.view.View;
@@ -78,6 +78,7 @@ import com.mishiranu.dashchan.util.FlagUtils;
 import com.mishiranu.dashchan.util.IOUtils;
 import com.mishiranu.dashchan.util.NavigationUtils;
 import com.mishiranu.dashchan.util.ResourceUtils;
+import com.mishiranu.dashchan.util.SharedPreferences;
 import com.mishiranu.dashchan.util.ViewUtils;
 import com.mishiranu.dashchan.widget.ClickableToast;
 import com.mishiranu.dashchan.widget.CustomDrawerLayout;
@@ -173,7 +174,7 @@ public class MainActivity extends StateActivity implements DrawerForm.Callback, 
 		ClickableToast.register(this);
 		ForegroundManager.getInstance().register(this);
 		FavoritesStorage.getInstance().getObservable().register(this);
-		Preferences.PREFERENCES.registerOnSharedPreferenceChangeListener(preferencesListener);
+		Preferences.PREFERENCES.register(preferencesListener);
 		ChanManager.getInstance().observable.register(chanManagerCallback);
 		watcherServiceClient = WatcherService.getClient(this);
 		watcherServiceClient.setCallback(this);
@@ -311,10 +312,8 @@ public class MainActivity extends StateActivity implements DrawerForm.Callback, 
 			File file = getSavedPagesFile();
 			if (file != null && file.exists()) {
 				Parcel parcel = Parcel.obtain();
-				FileInputStream input = null;
 				ByteArrayOutputStream output = new ByteArrayOutputStream();
-				try {
-					input = new FileInputStream(file);
+				try (FileInputStream input = new FileInputStream(file)) {
 					IOUtils.copyStream(input, output);
 					byte[] data = output.toByteArray();
 					parcel.unmarshall(data, 0, data.length);
@@ -324,9 +323,8 @@ public class MainActivity extends StateActivity implements DrawerForm.Callback, 
 					bundle.readFromParcel(parcel);
 					savedInstanceState = bundle;
 				} catch (IOException e) {
-					// Ignore exception
+					// Ignore
 				} finally {
-					IOUtils.close(input);
 					parcel.recycle();
 					file.delete();
 				}
@@ -450,7 +448,7 @@ public class MainActivity extends StateActivity implements DrawerForm.Callback, 
 		try {
 			fragmentManager.executePendingTransactions();
 		} catch (IllegalStateException e) {
-			// Ignore exception
+			// Ignore
 		}
 		return (ContentFragment) fragmentManager.findFragmentById(R.id.content_fragment);
 	}
@@ -1210,7 +1208,7 @@ public class MainActivity extends StateActivity implements DrawerForm.Callback, 
 		unbindService(downloadConnection);
 		watcherServiceClient.setCallback(null);
 		FavoritesStorage.getInstance().getObservable().unregister(this);
-		Preferences.PREFERENCES.unregisterOnSharedPreferenceChangeListener(preferencesListener);
+		Preferences.PREFERENCES.unregister(preferencesListener);
 		ChanManager.getInstance().observable.unregister(chanManagerCallback);
 		for (Chan chan : ChanManager.getInstance().getAvailableChans()) {
 			chan.configuration.commit();
@@ -1381,7 +1379,8 @@ public class MainActivity extends StateActivity implements DrawerForm.Callback, 
 					navigateData(newChanName, newBoardName, null, null, null, null,
 							FLAG_DATA_CLOSE_OVERLAYS | (fromCache ? FLAG_DATA_FROM_CACHE : 0));
 				} else {
-					onBackPressed(true, true, super::onBackPressed);
+					fragments.clear();
+					removeFragment();
 				}
 				return true;
 			}
@@ -1431,6 +1430,12 @@ public class MainActivity extends StateActivity implements DrawerForm.Callback, 
 	}
 
 	@Override
+	public boolean dispatchKeyEvent(KeyEvent event) {
+		ContentFragment fragment = getCurrentFragment();
+		return fragment.dispatchKeyEvent(event) || super.dispatchKeyEvent(event);
+	}
+
+	@Override
 	public void onThemeSelected(ThemeEngine.Theme theme) {
 		if (theme != null) {
 			Preferences.setTheme(theme.name);
@@ -1441,8 +1446,7 @@ public class MainActivity extends StateActivity implements DrawerForm.Callback, 
 		}
 	}
 
-	private final SharedPreferences.OnSharedPreferenceChangeListener preferencesListener
-			= (p, key) -> drawerForm.updatePreferences();
+	private final SharedPreferences.Listener preferencesListener = key -> drawerForm.updatePreferences();
 
 	@Override
 	public void onSelectChan(String chanName) {
@@ -1823,16 +1827,13 @@ public class MainActivity extends StateActivity implements DrawerForm.Callback, 
 		File file = getSavedPagesFile();
 		if (file != null) {
 			Parcel parcel = Parcel.obtain();
-			FileOutputStream output = null;
-			try {
+			try (FileOutputStream output = new FileOutputStream(file)) {
 				outState.writeToParcel(parcel, 0);
 				byte[] data = parcel.marshall();
-				output = new FileOutputStream(file);
 				IOUtils.copyStream(new ByteArrayInputStream(data), output);
 			} catch (IOException e) {
 				file.delete();
 			} finally {
-				IOUtils.close(output);
 				parcel.recycle();
 			}
 		}

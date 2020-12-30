@@ -4,6 +4,7 @@ import android.app.ActionBar;
 import android.app.Dialog;
 import android.graphics.Insets;
 import android.media.AudioManager;
+import android.view.ActionMode;
 import android.view.Menu;
 import android.view.MenuInflater;
 import android.view.MenuItem;
@@ -22,6 +23,7 @@ import com.mishiranu.dashchan.widget.ViewFactory;
 public class GalleryDialog extends Dialog {
 	public interface Callback {
 		boolean onBackPressed();
+		void onCreateActionContextBarView();
 	}
 
 	private final Fragment fragment;
@@ -29,6 +31,7 @@ public class GalleryDialog extends Dialog {
 
 	private ViewFactory.ToolbarHolder toolbarHolder;
 	private View actionBar;
+	private View actionContextBar;
 
 	public GalleryDialog(Fragment fragment) {
 		super(fragment.requireContext(), R.style.Theme_Gallery);
@@ -98,31 +101,26 @@ public class GalleryDialog extends Dialog {
 		return actionBar;
 	}
 
+	private View getPhoneWindowView(String resourceName) {
+		int id = fragment.getResources().getIdentifier(resourceName, "id", "android");
+		return id != 0 ? getWindow().getDecorView().findViewById(id) : null;
+	}
+
 	public View getActionBarView() {
 		if (actionBar == null) {
-			actionBar = getWindow().getDecorView().findViewById(fragment
-					.getResources().getIdentifier("action_bar", "id", "android"));
+			actionBar = getPhoneWindowView("action_bar");
 		}
 		return actionBar;
 	}
 
-	public interface OnFocusChangeListener {
-		void onFocusChange(boolean hasFocus);
-	}
-
-	private OnFocusChangeListener onFocusChangeListener;
-
-	@Override
-	public void onWindowFocusChanged(boolean hasFocus) {
-		super.onWindowFocusChanged(hasFocus);
-
-		if (onFocusChangeListener != null) {
-			onFocusChangeListener.onFocusChange(hasFocus);
+	public View getActionContextBarView() {
+		if (actionContextBar == null) {
+			actionContextBar = getPhoneWindowView("action_context_bar");
+			if (actionContextBar != null && fragment instanceof Callback) {
+				((Callback) fragment).onCreateActionContextBarView();
+			}
 		}
-	}
-
-	public void setOnFocusChangeListener(OnFocusChangeListener listener) {
-		this.onFocusChangeListener = listener;
+		return actionContextBar;
 	}
 
 	@Override
@@ -143,13 +141,17 @@ public class GalleryDialog extends Dialog {
 
 	@Override
 	public boolean onCreateOptionsMenu(@NonNull Menu menu) {
-		fragment.onCreateOptionsMenu(menu, menuInflater);
+		if (fragment.isAdded()) {
+			fragment.onCreateOptionsMenu(menu, menuInflater);
+		}
 		return true;
 	}
 
 	@Override
 	public boolean onPrepareOptionsMenu(@NonNull Menu menu) {
-		fragment.onPrepareOptionsMenu(menu);
+		if (fragment.isAdded()) {
+			fragment.onPrepareOptionsMenu(menu);
+		}
 		return true;
 	}
 
@@ -164,6 +166,12 @@ public class GalleryDialog extends Dialog {
 
 	@Override
 	public boolean onOptionsItemSelected(@NonNull MenuItem item) {
-		return fragment.onOptionsItemSelected(item);
+		return fragment.isAdded() && fragment.onOptionsItemSelected(item);
+	}
+
+	@Override
+	public void onActionModeStarted(ActionMode mode) {
+		super.onActionModeStarted(mode);
+		getActionContextBarView();
 	}
 }

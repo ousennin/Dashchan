@@ -112,7 +112,6 @@ public class ChanConfiguration implements Chan.Linked {
 	public static final class Board {
 		@Public public boolean allowSearch;
 		@Public public boolean allowCatalog;
-		@Public public boolean allowCatalogSearch;
 		@Public public boolean allowArchive;
 		@Public public boolean allowPosting;
 		@Public public boolean allowDeleting;
@@ -208,6 +207,7 @@ public class ChanConfiguration implements Chan.Linked {
 	public static final class Archivation {
 		@Public public final List<String> hosts = new ArrayList<>();
 		@Public public final List<Pair<String, String>> options = new ArrayList<>();
+		@Public public boolean queryOnly = false;
 
 		@Public
 		public Archivation() {}
@@ -772,7 +772,7 @@ public class ChanConfiguration implements Chan.Linked {
 
 	@Public
 	public final DataFile getDownloadDirectory() {
-		return DataFile.obtain(getContext(), DataFile.Target.DOWNLOADS, null);
+		return DataFile.obtain(DataFile.Target.DOWNLOADS, null);
 	}
 
 	public final void updateFromBoards(BoardCategory[] boardCategories) {

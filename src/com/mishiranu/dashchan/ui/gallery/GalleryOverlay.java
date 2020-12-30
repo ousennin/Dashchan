@@ -79,6 +79,7 @@ public class GalleryOverlay extends DialogFragment implements GalleryDialog.Call
 
 	private boolean galleryWindow;
 	private boolean galleryMode;
+	private CornerAnimator cornerAnimator;
 	private final boolean scrollThread = Preferences.isScrollThreadGallery();
 
 	private Pair<CharSequence, CharSequence> titleSubtitle;
@@ -147,11 +148,7 @@ public class GalleryOverlay extends DialogFragment implements GalleryDialog.Call
 	@Override
 	public void onDestroyView() {
 		super.onDestroyView();
-
-		if (showcaseDestroy != null) {
-			showcaseDestroy.run();
-			showcaseDestroy = null;
-		}
+		destroyShowcase(false);
 	}
 
 	@Override
@@ -216,7 +213,7 @@ public class GalleryOverlay extends DialogFragment implements GalleryDialog.Call
 				invalidateSystemUiFlags();
 			}
 		};
-		dialog.setOnFocusChangeListener(hasFocus -> {
+		ViewUtils.addWindowFocusListener(rootView, (v, hasFocus) -> {
 			if (pagerUnit != null) {
 				// Block touch events when dialogs are opened
 				pagerUnit.setHasFocus(hasFocus);
@@ -345,6 +342,9 @@ public class GalleryOverlay extends DialogFragment implements GalleryDialog.Call
 	public void onDestroy() {
 		super.onDestroy();
 
+		if (cornerAnimator != null) {
+			cornerAnimator.cancel();
+		}
 		if (pagerUnit != null) {
 			pagerUnit.onFinish();
 		}
@@ -370,9 +370,7 @@ public class GalleryOverlay extends DialogFragment implements GalleryDialog.Call
 
 	@Override
 	public boolean onBackPressed() {
-		if (showcaseDestroy != null) {
-			showcaseDestroy.run();
-			showcaseDestroy = null;
+		if (destroyShowcase(true)) {
 			return true;
 		}
 		return returnToGallery();
@@ -532,6 +530,9 @@ public class GalleryOverlay extends DialogFragment implements GalleryDialog.Call
 		private static final int INTERVAL = 200;
 
 		public CornerAnimator(int actionBarAlpha, int statusBarAlpha) {
+			if (cornerAnimator != null) {
+				cornerAnimator.cancel();
+			}
 			Drawable drawable = getDialog().getActionBarView().getBackground();
 			fromActionBarAlpha = Color.alpha(drawable instanceof ColorDrawable
 					? ((ColorDrawable) drawable).getColor() : statusBarAlpha);
@@ -544,6 +545,7 @@ public class GalleryOverlay extends DialogFragment implements GalleryDialog.Call
 				toStatusBarAlpha = 0x00;
 			}
 			if (fromActionBarAlpha != toActionBarAlpha || fromStatusBarAlpha != toStatusBarAlpha) {
+				cornerAnimator = this;
 				run();
 			}
 		}
@@ -554,8 +556,12 @@ public class GalleryOverlay extends DialogFragment implements GalleryDialog.Call
 			int actionBarColorAlpha = (int) AnimationUtils.lerp(fromActionBarAlpha, toActionBarAlpha, t);
 			GalleryDialog dialog = getDialog();
 			if (dialog != null) {
-				dialog.getActionBarView().setBackgroundColor((actionBarColorAlpha << 24)
-						| (0x00ffffff & ACTION_BAR_COLOR));
+				int actionBarColor = (actionBarColorAlpha << 24) | (0x00ffffff & ACTION_BAR_COLOR);
+				dialog.getActionBarView().setBackgroundColor(actionBarColor);
+				View actionContextBar = dialog.getActionContextBarView();
+				if (actionContextBar != null) {
+					actionContextBar.setBackgroundColor(actionBarColor);
+				}
 				if (C.API_LOLLIPOP) {
 					int statusBarColorAlpha = (int) AnimationUtils.lerp(fromStatusBarAlpha, toStatusBarAlpha, t);
 					int color = (statusBarColorAlpha << 24) | (0x00ffffff & ACTION_BAR_COLOR);
@@ -564,16 +570,35 @@ public class GalleryOverlay extends DialogFragment implements GalleryDialog.Call
 				}
 				if (t < 1f) {
 					rootView.postOnAnimation(this);
+				} else if (cornerAnimator == this) {
+					cornerAnimator = null;
 				}
+			}
+		}
+
+		public void cancel() {
+			rootView.removeCallbacks(this);
+			if (cornerAnimator == this) {
+				cornerAnimator = null;
 			}
 		}
 	}
 
 	@Override
-	public void modifyVerticalSwipeState(boolean ignoreIfGallery, float value) {
-		if (!ignoreIfGallery && !galleryWindow) {
-			rootView.getBackground().setAlpha((int) (0xff * (1f - value)));
+	public void onCreateActionContextBarView() {
+		GalleryDialog dialog = getDialog();
+		Drawable drawable = dialog.getActionBarView().getBackground();
+		if (drawable instanceof ColorDrawable) {
+			dialog.getActionContextBarView().setBackgroundColor(((ColorDrawable) drawable).getColor());
 		}
+	}
+
+	@Override
+	public void modifyVerticalSwipeState(boolean ignoreIfGallery, float value) {
+		if (ignoreIfGallery || galleryWindow) {
+			value = 0f;
+		}
+		rootView.getBackground().setAlpha((int) (0xff * (1f - value)));
 	}
 
 	@Override
@@ -745,6 +770,18 @@ public class GalleryOverlay extends DialogFragment implements GalleryDialog.Call
 
 	private Runnable showcaseDestroy;
 
+	private boolean destroyShowcase(boolean consume) {
+		if (showcaseDestroy != null) {
+			if (consume) {
+				Preferences.consumeShowcaseGallery();
+			}
+			showcaseDestroy.run();
+			showcaseDestroy = null;
+			return true;
+		}
+		return false;
+	}
+
 	private void displayShowcase() {
 		if (showcaseDestroy != null || !Preferences.isShowcaseGalleryEnabled() ||
 				!ViewCompat.isAttachedToWindow(rootView)) {
@@ -802,11 +839,7 @@ public class GalleryOverlay extends DialogFragment implements GalleryDialog.Call
 		}
 		windowManager.addView(frameLayout, layoutParams);
 
-		showcaseDestroy = () -> windowManager.removeView(frameLayout);
-		button.setOnClickListener(v -> {
-			Preferences.consumeShowcaseGallery();
-			showcaseDestroy.run();
-			showcaseDestroy = null;
-		});
+		showcaseDestroy = () -> windowManager.removeViewImmediate(frameLayout);
+		button.setOnClickListener(v -> destroyShowcase(true));
 	}
 }

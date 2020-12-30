@@ -5,6 +5,7 @@ import android.app.ActivityManager;
 import android.app.Application;
 import android.content.Context;
 import android.content.res.Configuration;
+import android.database.sqlite.SQLiteDatabase;
 import android.os.Build;
 import android.os.Process;
 import androidx.annotation.NonNull;
@@ -17,7 +18,7 @@ import com.mishiranu.dashchan.content.database.ChanDatabase;
 import com.mishiranu.dashchan.content.database.CommonDatabase;
 import com.mishiranu.dashchan.content.database.PagesDatabase;
 import com.mishiranu.dashchan.util.IOUtils;
-import com.mishiranu.dashchan.util.Log;
+import com.mishiranu.dashchan.util.Logger;
 import java.io.File;
 import java.util.Collections;
 import java.util.List;
@@ -63,7 +64,7 @@ public class MainApplication extends Application {
 
 		LocaleManager.getInstance().updateConfiguration(getResources().getConfiguration());
 		if (isMainProcess()) {
-			Log.init();
+			Logger.init(this);
 			ChanManager.getInstance();
 			HttpClient.getInstance();
 			CommonDatabase.getInstance();
@@ -100,6 +101,10 @@ public class MainApplication extends Application {
 		}
 	}
 
+	public File getSharedPrefsDir() {
+		return new File(getCacheDir().getParentFile(), "shared_prefs");
+	}
+
 	private File getWebViewCacheDir() {
 		return new File(super.getCacheDir(), "webview");
 	}
@@ -122,6 +127,16 @@ public class MainApplication extends Application {
 			return dir;
 		} else {
 			return super.getDir(name, mode);
+		}
+	}
+
+	@Override
+	public SQLiteDatabase openOrCreateDatabase(String name, int mode, SQLiteDatabase.CursorFactory factory) {
+		if ("http_auth.db".equals(name)) {
+			// Create in-memory database for WebView
+			return SQLiteDatabase.create(factory);
+		} else {
+			return super.openOrCreateDatabase(name, mode, factory);
 		}
 	}
 }

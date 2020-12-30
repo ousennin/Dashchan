@@ -12,7 +12,10 @@ import android.content.res.Resources;
 import android.graphics.drawable.Drawable;
 import android.net.Uri;
 import android.os.Bundle;
+import android.os.Parcel;
+import android.os.Parcelable;
 import android.util.DisplayMetrics;
+import android.util.Log;
 import androidx.annotation.NonNull;
 import androidx.core.content.pm.PackageInfoCompat;
 import chan.util.StringUtils;
@@ -24,8 +27,8 @@ import com.mishiranu.dashchan.graphics.ChanIconDrawable;
 import com.mishiranu.dashchan.media.VideoPlayer;
 import com.mishiranu.dashchan.util.AndroidUtils;
 import com.mishiranu.dashchan.util.Hasher;
-import com.mishiranu.dashchan.util.Log;
 import com.mishiranu.dashchan.util.WeakObservable;
+import dalvik.system.DelegateLastClassLoader;
 import dalvik.system.PathClassLoader;
 import java.io.File;
 import java.util.ArrayList;
@@ -102,7 +105,7 @@ public class ChanManager {
 		return INSTANCE;
 	}
 
-	public static final class Fingerprints {
+	public static final class Fingerprints implements Parcelable {
 		public final Set<String> fingerprints;
 
 		public Fingerprints(Set<String> fingerprints) {
@@ -132,6 +135,37 @@ public class ChanManager {
 			}
 			return builder.toString();
 		}
+
+		@Override
+		public int describeContents() {
+			return 0;
+		}
+
+		@Override
+		public void writeToParcel(Parcel dest, int flags) {
+			dest.writeInt(fingerprints.size());
+			for (String fingerprint : fingerprints) {
+				dest.writeString(fingerprint);
+			}
+		}
+
+		public static final Creator<Fingerprints> CREATOR = new Creator<Fingerprints>() {
+			@Override
+			public Fingerprints createFromParcel(Parcel source) {
+				int fingerprintsSize = source.readInt();
+				HashSet<String> fingerprints = new HashSet<>();
+				for (int i = 0; i < fingerprintsSize; i++) {
+					String fingerprint = source.readString();
+					fingerprints.add(fingerprint);
+				}
+				return new Fingerprints(Collections.unmodifiableSet(fingerprints));
+			}
+
+			@Override
+			public Fingerprints[] newArray(int size) {
+				return new Fingerprints[size];
+			}
+		};
 	}
 
 	public static class ExtensionItem {
@@ -289,6 +323,12 @@ public class ChanManager {
 			this.extensions = extensionsMap(extensions);
 			updateExtensions(null, null, true);
 			registerReceiver();
+
+			Preferences.PREFERENCES.register(key -> {
+				if (Preferences.KEY_CHANS_ORDER.equals(key)) {
+					updateExtensions(null, null, true);
+				}
+			});
 		} else {
 			this.applicationFingerprints = new Fingerprints(Collections.emptySet());
 			this.extensions = Collections.emptyMap();
@@ -411,7 +451,7 @@ public class ChanManager {
 			Map<String, List<String>> archiveMap = new HashMap<>();
 			for (Extension extension : ordered.values()) {
 				ChanConfiguration.Archivation archivation = extension.chan != null ?
-						extension.chan.configuration.obtainArchivationConfiguration() : null;
+						extension.chan.configuration.safe().obtainArchivation() : null;
 				if (archivation != null) {
 					for (String host : archivation.hosts) {
 						String chanName = getChanNameByHost(host);
@@ -430,23 +470,30 @@ public class ChanManager {
 		}
 	}
 
-	private static class CompatPathClassLoader extends PathClassLoader {
-		public CompatPathClassLoader(String dexPath, String librarySearchPath, ClassLoader parent) {
+	private static class CompatDelegateLastClassLoader extends PathClassLoader {
+		public CompatDelegateLastClassLoader(String dexPath, String librarySearchPath, ClassLoader parent) {
 			super(dexPath, librarySearchPath, parent);
 		}
 
 		@Override
 		protected Class<?> loadClass(String name, boolean resolve) throws ClassNotFoundException {
-			if ("chan.text.TemplateParser".equals(name) ||
-					name != null && name.startsWith("chan.text.TemplateParser$")) {
-				// TemplateParser is moved to the library, which resolution should have higher priority
+			Class<?> loaded = findLoadedClass(name);
+			if (loaded != null) {
+				return loaded;
+			}
+			try {
+				return Object.class.getClassLoader().loadClass(name);
+			} catch (ClassNotFoundException e1) {
 				try {
 					return findClass(name);
-				} catch (ClassNotFoundException e) {
-					// Extension still uses API class
+				} catch (ClassNotFoundException exception) {
+					try {
+						return getParent().loadClass(name);
+					} catch (ClassNotFoundException e2) {
+						throw exception;
+					}
 				}
 			}
-			return super.loadClass(name, resolve);
 		}
 	}
 
@@ -482,7 +529,7 @@ public class ChanManager {
 				: libExtension ? META_LIB_EXTENSION_NAME : null);
 		if (name == null || !VALID_EXTENSION_NAME.matcher(name).matches() ||
 				(chanExtension ? RESERVED_CHAN_NAMES : RESERVED_EXTENSION_NAMES).contains(name)) {
-			Log.persistent().write("Invalid extension name: " + name);
+			Log.e("ChanManager", "Invalid extension name: " + name);
 			return null;
 		}
 		boolean nameConflict;
@@ -493,7 +540,7 @@ public class ChanManager {
 			nameConflict = extension != null && !extension.item.packageName.equals(packageInfo.packageName);
 		}
 		if (nameConflict) {
-			Log.persistent().write("Extension name conflict: " + name + " already exists");
+			Log.e("ChanManager", "Extension name conflict: " + name + " already exists");
 			return null;
 		}
 		String title = data.getString(chanExtension ? META_CHAN_EXTENSION_TITLE
@@ -507,7 +554,7 @@ public class ChanManager {
 			int invalidVersion = Integer.MIN_VALUE;
 			int apiVersion = data.getInt(META_CHAN_EXTENSION_VERSION, invalidVersion);
 			if (apiVersion == invalidVersion) {
-				Log.persistent().write("Invalid extension version");
+				Log.e("ChanManager", "Invalid extension version");
 				return null;
 			}
 			int iconResId = data.getInt(META_CHAN_EXTENSION_ICON);
@@ -519,7 +566,7 @@ public class ChanManager {
 			String classMarkup = data.getString(META_CHAN_EXTENSION_CLASS_MARKUP);
 			if (classConfiguration == null || classPerformer == null || classLocator == null
 					|| classMarkup == null) {
-				Log.persistent().write("Undefined extension class");
+				Log.e("ChanManager", "Undefined extension class");
 				return null;
 			}
 			classConfiguration = extendClassName(classConfiguration, packageInfo.packageName);
@@ -560,8 +607,14 @@ public class ChanManager {
 				if (nativeLibraryDir != null && !new File(nativeLibraryDir).exists()) {
 					nativeLibraryDir = null;
 				}
-				ClassLoader classLoader = new CompatPathClassLoader(chanItem.applicationInfo.sourceDir,
-						nativeLibraryDir, ChanManager.class.getClassLoader());
+				ClassLoader classLoader;
+				String dexPath = chanItem.applicationInfo.sourceDir;
+				ClassLoader parent = ChanManager.class.getClassLoader();
+				if (C.API_OREO_MR1) {
+					classLoader = new DelegateLastClassLoader(dexPath, nativeLibraryDir, parent);
+				} else {
+					classLoader = new CompatDelegateLastClassLoader(dexPath, nativeLibraryDir, parent);
+				}
 				Resources resources = packageManager.getResourcesForApplication(chanItem.applicationInfo);
 				Chan.Provider chanProvider = new Chan.Provider(null);
 				ChanConfiguration configuration = ChanConfiguration.INITIALIZER.initialize(classLoader,
@@ -578,7 +631,7 @@ public class ChanManager {
 				chanProvider.set(chan);
 				return chan;
 			} catch (Exception | LinkageError e) {
-				Log.persistent().stack(e);
+				e.printStackTrace();
 			}
 		}
 		return null;
@@ -785,11 +838,6 @@ public class ChanManager {
 		return null;
 	}
 
-	public void setChansOrder(List<String> chanNames) {
-		Preferences.setChansOrder(chanNames);
-		updateExtensions(null, null, true);
-	}
-
 	String getChanNameByHost(String host) {
 		if (host != null) {
 			for (Extension extension : extensions.values()) {
@@ -853,6 +901,22 @@ public class ChanManager {
 
 	public Fingerprints getApplicationFingerprints() {
 		return applicationFingerprints;
+	}
+
+	public Fingerprints getFingerprints(File file) {
+		PackageManager packageManager = MainApplication.getInstance().getPackageManager();
+		PackageInfo packageInfo;
+		try {
+			packageInfo = packageManager.getPackageArchiveInfo(file.getPath(), PACKAGE_MANAGER_SIGNATURE_FLAGS);
+		} catch (Exception e) {
+			e.printStackTrace();
+			return null;
+		}
+		if (packageInfo == null) {
+			Log.e("ChanManager", "Invalid package file: " + file.getName());
+			return null;
+		}
+		return extractFingerprints(packageInfo);
 	}
 
 	Chan getFallbackChan() {

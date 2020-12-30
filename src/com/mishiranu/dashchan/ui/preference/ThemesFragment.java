@@ -8,7 +8,6 @@ import android.net.Uri;
 import android.os.Bundle;
 import android.util.Pair;
 import android.view.Menu;
-import android.view.MenuInflater;
 import android.view.MenuItem;
 import android.view.View;
 import android.view.ViewGroup;
@@ -40,7 +39,6 @@ import com.mishiranu.dashchan.ui.preference.core.Preference;
 import com.mishiranu.dashchan.util.ConcurrentUtils;
 import com.mishiranu.dashchan.util.IOUtils;
 import com.mishiranu.dashchan.util.ListViewUtils;
-import com.mishiranu.dashchan.util.Log;
 import com.mishiranu.dashchan.util.ViewUtils;
 import com.mishiranu.dashchan.widget.ClickableToast;
 import com.mishiranu.dashchan.widget.DividerItemDecoration;
@@ -67,7 +65,6 @@ public class ThemesFragment extends BaseListFragment {
 	public void onActivityCreated(Bundle savedInstanceState) {
 		super.onActivityCreated(savedInstanceState);
 
-		setHasOptionsMenu(true);
 		((FragmentHandler) requireActivity()).setTitleSubtitle(getString(R.string.themes), null);
 		RecyclerView recyclerView = getRecyclerView();
 		recyclerView.setAdapter(new Adapter(recyclerView.getContext(), (theme, installed, longClick) -> {
@@ -132,7 +129,7 @@ public class ThemesFragment extends BaseListFragment {
 	}
 
 	@Override
-	public void onCreateOptionsMenu(@NonNull Menu menu, @NonNull MenuInflater inflater) {
+	public void onCreateOptionsMenu(Menu menu, boolean primary) {
 		menu.add(0, R.id.menu_add_theme, 0, R.string.add_theme)
 				.setIcon(((FragmentHandler) requireActivity()).getActionBarIcon(R.attr.iconActionAddRule))
 				.setShowAsActionFlags(MenuItem.SHOW_AS_ACTION_IF_ROOM);
@@ -163,15 +160,15 @@ public class ThemesFragment extends BaseListFragment {
 			switch (requestCode) {
 				case C.REQUEST_CODE_ATTACH: {
 					Uri uri = data.getData();
-					FileHolder fileHolder = uri != null ? FileHolder.obtain(requireContext(), uri) : null;
+					FileHolder fileHolder = uri != null ? FileHolder.obtain(uri) : null;
 					if (fileHolder != null) {
 						ByteArrayOutputStream output = new ByteArrayOutputStream();
 						boolean success;
-						try (InputStream input = FileHolder.obtain(requireContext(), uri).openInputStream()) {
+						try (InputStream input = fileHolder.openInputStream()) {
 							IOUtils.copyStream(input, output);
 							success = true;
 						} catch (IOException e) {
-							Log.persistent().stack(e);
+							e.printStackTrace();
 							success = false;
 						}
 						byte[] array = output.toByteArray();

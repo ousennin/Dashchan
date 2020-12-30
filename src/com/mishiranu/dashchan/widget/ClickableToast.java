@@ -29,20 +29,18 @@ import androidx.lifecycle.Lifecycle;
 import androidx.lifecycle.LifecycleObserver;
 import androidx.lifecycle.LifecycleOwner;
 import androidx.lifecycle.OnLifecycleEvent;
-import chan.util.StringUtils;
 import com.mishiranu.dashchan.C;
 import com.mishiranu.dashchan.R;
 import com.mishiranu.dashchan.content.model.ErrorItem;
 import com.mishiranu.dashchan.graphics.BaseDrawable;
+import com.mishiranu.dashchan.util.AndroidUtils;
 import com.mishiranu.dashchan.util.ConcurrentUtils;
 import com.mishiranu.dashchan.util.FlagUtils;
 import com.mishiranu.dashchan.util.GraphicsUtils;
-import com.mishiranu.dashchan.util.Log;
 import com.mishiranu.dashchan.util.ResourceUtils;
 import com.mishiranu.dashchan.util.ViewUtils;
 import java.lang.ref.WeakReference;
 import java.lang.reflect.Field;
-import java.lang.reflect.Method;
 import java.util.Objects;
 import java.util.UUID;
 
@@ -58,8 +56,9 @@ public class ClickableToast implements LifecycleObserver {
 		LAYOUT_ID = resources.getIdentifier("transient_notification", "layout", "android");
 	}
 
-	private final View container;
+	private final ComponentActivity activity;
 	private final WindowManager windowManager;
+	private final View container;
 
 	private final PartialClickDrawable partialClickDrawable;
 	private final TextView message;
@@ -73,21 +72,21 @@ public class ClickableToast implements LifecycleObserver {
 	private boolean clickableOnlyWhenRoot;
 
 	private boolean resumed;
-	private boolean focused;
 
-	private static WeakReference<ComponentActivity> activity;
+	private static WeakReference<ComponentActivity> currentActivity;
 
 	private static View getTagView(ComponentActivity activity) {
 		return activity.getWindow().getDecorView();
 	}
 
 	private static ClickableToast getToast(ComponentActivity activity) {
-		return (ClickableToast) getTagView(activity).getTag(R.id.tag_clickable_toast);
+		ClickableToast toast = (ClickableToast) getTagView(activity).getTag(R.id.tag_clickable_toast);
+		return toast != null && toast.isForActivity(activity) ? toast : null;
 	}
 
 	private static ClickableToast getCurrentToast() {
-		if (activity != null) {
-			ComponentActivity activity = ClickableToast.activity.get();
+		if (currentActivity != null) {
+			ComponentActivity activity = currentActivity.get();
 			return activity != null ? getToast(activity) : null;
 		}
 		return null;
@@ -95,8 +94,8 @@ public class ClickableToast implements LifecycleObserver {
 
 	public static void register(@NonNull ComponentActivity activity) {
 		Objects.requireNonNull(activity);
-		if (ClickableToast.activity != null) {
-			ComponentActivity oldActivity = ClickableToast.activity.get();
+		if (currentActivity != null) {
+			ComponentActivity oldActivity = currentActivity.get();
 			if (oldActivity == activity) {
 				return;
 			}
@@ -104,13 +103,13 @@ public class ClickableToast implements LifecycleObserver {
 				getToast(oldActivity).cancelInternal();
 			}
 		}
-		ClickableToast.activity = null;
+		currentActivity = null;
 		Lifecycle.State state = activity.getLifecycle().getCurrentState();
 		if (state.isAtLeast(Lifecycle.State.INITIALIZED)) {
 			if (getToast(activity) == null) {
 				getTagView(activity).setTag(R.id.tag_clickable_toast, new ClickableToast(activity));
 			}
-			ClickableToast.activity = new WeakReference<>(activity);
+			currentActivity = new WeakReference<>(activity);
 		}
 	}
 
@@ -164,6 +163,10 @@ public class ClickableToast implements LifecycleObserver {
 	}
 
 	private ClickableToast(ComponentActivity activity) {
+		this.activity = activity;
+		windowManager = (WindowManager) activity.getSystemService(Context.WINDOW_SERVICE);
+		ViewUtils.addWindowFocusListener(getTagView(activity), windowFocusListener);
+
 		activity.getLifecycle().addObserver(this);
 		resumed = activity.getLifecycle().getCurrentState() == Lifecycle.State.RESUMED;
 		float density = ResourceUtils.obtainDensity(activity);
@@ -174,11 +177,13 @@ public class ClickableToast implements LifecycleObserver {
 		TextView message1 = toast1.findViewById(android.R.id.message);
 		TextView message2 = toast2.findViewById(android.R.id.message);
 		Drawable backgroundDrawable = toast1.getBackground();
+		View backgroundView = toast1;
 		if (backgroundDrawable == null) {
 			View view = message1;
 			while (view != null) {
-				backgroundDrawable = message1.getBackground();
-				if (backgroundDrawable == null) {
+				backgroundDrawable = view.getBackground();
+				if (backgroundDrawable != null) {
+					backgroundView = view;
 					break;
 				}
 				view = (View) view.getParent();
@@ -208,7 +213,7 @@ public class ClickableToast implements LifecycleObserver {
 		View measureView = message1;
 		while (true) {
 			View parent = (View) measureView.getParent();
-			if (parent == null) {
+			if (parent == null || backgroundDrawable != null && measureView == backgroundView) {
 				break;
 			}
 			totalPadding.left += measureView.getLeft();
@@ -252,41 +257,43 @@ public class ClickableToast implements LifecycleObserver {
 		container = linearLayout;
 		message = message1;
 		button = message2;
-
-		windowManager = (WindowManager) activity.getSystemService(Context.WINDOW_SERVICE);
-		ViewGroup viewGroup = (ViewGroup) activity.getWindow().getDecorView();
-		viewGroup.addView(new View(activity) {
-			@Override
-			public void onWindowFocusChanged(boolean hasWindowFocus) {
-				super.onWindowFocusChanged(hasWindowFocus);
-				focused = hasWindowFocus;
-				updateAndApplyLayoutChecked();
-			}
-		}, 0, 0);
 	}
 
 	@SuppressWarnings("unused")
 	@OnLifecycleEvent(Lifecycle.Event.ON_RESUME)
-	public void onResume() {
+	private void onResume() {
 		resumed = true;
 		updateAndApplyLayoutChecked();
 	}
 
 	@SuppressWarnings("unused")
 	@OnLifecycleEvent(Lifecycle.Event.ON_PAUSE)
-	public void onPause() {
+	private void onPause() {
 		resumed = false;
 		updateAndApplyLayoutChecked();
 	}
 
 	@SuppressWarnings("unused")
 	@OnLifecycleEvent(Lifecycle.Event.ON_DESTROY)
-	public void onDestroy(LifecycleOwner owner) {
-		if (activity != null && activity.get() == owner) {
-			activity = null;
+	private void onDestroy(LifecycleOwner owner) {
+		if (currentActivity != null && currentActivity.get() == owner) {
+			currentActivity = null;
 		}
 		cancelInternal();
+		// Unbind toast from DecorView, which may be reused on configuration change
+		View tagView = getTagView((ComponentActivity) owner);
+		if (tagView.getTag(R.id.tag_clickable_toast) == this) {
+			tagView.setTag(R.id.tag_clickable_toast, null);
+		}
+		ViewUtils.removeWindowFocusListener(tagView, windowFocusListener);
 	}
+
+	private boolean isForActivity(ComponentActivity activity) {
+		// Toast is bound to DecorView, which may be reused on configuration change
+		return this.activity == activity;
+	}
+
+	private final View.OnFocusChangeListener windowFocusListener = (v, hasFocus) -> updateAndApplyLayoutChecked();
 
 	private String showInternal(CharSequence message, String updateId, Button button) {
 		boolean update = updateId != null && updateId.equals(showing);
@@ -323,18 +330,18 @@ public class ClickableToast implements LifecycleObserver {
 		boolean added = false;
 		if (C.API_OREO) {
 			// TYPE_APPLICATION_OVERLAY requires SYSTEM_ALERT_WINDOW permission
-			if (Settings.canDrawOverlays(container.getContext())) {
+			if (Settings.canDrawOverlays(activity)) {
 				added = addContainerToWindowManager(WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY);
 			}
 		} else if (C.API_NOUGAT_MR1) {
 			// TYPE_TOAST is prohibited on 7.1 when target API is > 7.1 (excuse me, wtf?)
 			// TYPE_PHONE requires SYSTEM_ALERT_WINDOW permission
-			if (Settings.canDrawOverlays(container.getContext())) {
+			if (Settings.canDrawOverlays(activity)) {
 				@SuppressWarnings("deprecation")
 				int type = WindowManager.LayoutParams.TYPE_PHONE;
 				added = addContainerToWindowManager(type);
 			}
-		} else if (C.API_LOLLIPOP && !IS_MIUI) {
+		} else if (C.API_LOLLIPOP && !AndroidUtils.IS_MIUI) {
 			// TYPE_TOAST works well only on Android 5.0-7.1, but doesn't work on MIUI
 			@SuppressWarnings("deprecation")
 			int type = WindowManager.LayoutParams.TYPE_TOAST;
@@ -350,13 +357,12 @@ public class ClickableToast implements LifecycleObserver {
 	private boolean addContainerToWindowManager(int type) {
 		boolean success = false;
 		try {
-			currentContainer = new FrameLayout(container.getContext());
+			currentContainer = new FrameLayout(activity);
 			currentContainer.addView(container, new FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT,
 					FrameLayout.LayoutParams.WRAP_CONTENT));
 			windowManager.addView(currentContainer, createLayoutParams(type));
 			success = true;
 		} catch (WindowManager.BadTokenException e) {
-			removeCurrentContainer();
 			String errorMessage = e.getMessage();
 			if (errorMessage == null || !(errorMessage.contains("permission denied") ||
 					errorMessage.contains("has already been added"))) {
@@ -385,7 +391,7 @@ public class ClickableToast implements LifecycleObserver {
 		layoutParams.flags = WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE |
 				WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL;
 		// For hierarchy viewer (layout inspector)
-		layoutParams.setTitle(container.getContext().getPackageName() + "/" + getClass().getName());
+		layoutParams.setTitle(activity.getPackageName() + "/" + getClass().getName());
 		layoutParams.windowAnimations = android.R.style.Animation_Toast;
 		layoutParams.gravity = Gravity.CENTER_HORIZONTAL | Gravity.BOTTOM;
 		layoutParams.y = Y_OFFSET;
@@ -394,7 +400,7 @@ public class ClickableToast implements LifecycleObserver {
 			// PRIVATE_FLAG_NO_MOVE_ANIMATION == 0x00000040
 			field.set(layoutParams, field.getInt(layoutParams) | 0x00000040);
 		} catch (Exception e) {
-			Log.persistent().stack(e);
+			e.printStackTrace();
 		}
 		return updateLayoutParams(layoutParams);
 	}
@@ -407,6 +413,7 @@ public class ClickableToast implements LifecycleObserver {
 	}
 
 	private void updateLayout() {
+		boolean focused = activity.getWindow().getDecorView().hasWindowFocus();
 		realClickable = clickable && (focused || !clickableOnlyWhenRoot) && resumed;
 		button.setVisibility(realClickable ? View.VISIBLE : View.GONE);
 		message.setPadding(realClickable ? button.getPaddingRight() : 0, 0,
@@ -425,6 +432,7 @@ public class ClickableToast implements LifecycleObserver {
 		if (showing == null) {
 			return;
 		}
+		onClickListener = null;
 		showing = null;
 		clickable = false;
 		realClickable = false;
@@ -434,7 +442,7 @@ public class ClickableToast implements LifecycleObserver {
 	private void removeCurrentContainer() {
 		if (currentContainer != null) {
 			if (currentContainer.getParent() != null) {
-				windowManager.removeView(currentContainer);
+				windowManager.removeViewImmediate(currentContainer);
 			}
 			currentContainer.removeView(container);
 			currentContainer = null;
@@ -588,19 +596,5 @@ public class ClickableToast implements LifecycleObserver {
 		public int getIntrinsicWidth() {
 			return width;
 		}
-	}
-
-	private static final boolean IS_MIUI;
-
-	static {
-		boolean isMiui = false;
-		try {
-			Method getProperty = Class.forName("android.os.SystemProperties")
-					.getMethod("get", String.class, String.class);
-			isMiui = !StringUtils.isEmpty((String) getProperty.invoke(null, "ro.miui.ui.version.name", ""));
-		} catch (Exception e) {
-			// Ignore exception
-		}
-		IS_MIUI = isMiui;
 	}
 }

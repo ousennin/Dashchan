@@ -39,7 +39,6 @@
 	<string name="board">Раздел</string>
 	<string name="board_doesnt_exist">Раздел не существует</string>
 	<string name="boards">Разделы</string>
-	<string name="build_version">Версия сборки</string>
 	<string name="bump_limit">Бамплимит</string>
 	<string name="cache_is_unavailable">Кэш недоступен</string>
 	<string name="cache_size">Размер кэша</string>
@@ -102,6 +101,7 @@
 	<string name="crop_thumbnails__summary">Миниатюры будут заполнять квадрат</string>
 	<string name="cyclical_thread">Цикличный тред</string>
 	<string name="cyclical_threads_refresh_mode">Режим обновления цикличных тредов</string>
+	<string name="database">База данных</string>
 	<string name="date_created">Дата создания</string>
 	<string name="ddos_protection_bypass_failed">Не удалось обойти DDoS-защиту</string>
 	<string name="default_name_cant_be_hidden">Нельзя скрыть имя по умолчанию</string>
@@ -496,6 +496,7 @@
 	<string name="threads_will_be_deleted__sentence">Будут удалены следующие треды.</string>
 	<string name="thumbnail_scale">Масштаб миниатюр</string>
 	<string name="thumbnails">Миниатюры</string>
+	<string name="timeout_sec">Таймаут (сек.)</string>
 	<string name="today">Сегодня</string>
 	<string name="too_few_meaningful_words">Слишком мало значащих слов</string>
 	<string name="too_many_attachments">Слишком много вложений</string>
@@ -516,7 +517,6 @@
 	<string name="update_reminder__sentence">Прогресс загрузки можно отследить в панели уведомлений.\n\nВы можете
 		установить приложения после окончания загрузки.</string>
 	<string name="updates">Обновления</string>
-	<string name="updates__genitive">Обновлений</string>
 	<string name="updates_available__genitive">Доступно обновлений</string>
 	<string name="use_built_in_video_player">Использовать встроенный видеоплеер</string>
 	<string name="use_built_in_video_player__summary">Воспроизводить вложенные WebM видео</string>
@@ -534,6 +534,7 @@
 	<string name="validation_completed">Проверка завершена</string>
 	<string name="verify_certificate">Проверять сертификат</string>
 	<string name="verify_certificate__summary">Соединение будет разорвано, если сертификат не достоверен</string>
+	<string name="version">Версия</string>
 	<string name="vibration">Вибрация</string>
 	<string name="video_player">Видеоплеер</string>
 	<string name="view__verb">Просмотреть</string>

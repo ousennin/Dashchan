@@ -35,7 +35,6 @@ import com.mishiranu.dashchan.ui.InstanceDialog;
 import com.mishiranu.dashchan.util.AnimationUtils;
 import com.mishiranu.dashchan.util.AudioFocus;
 import com.mishiranu.dashchan.util.ConcurrentUtils;
-import com.mishiranu.dashchan.util.Log;
 import com.mishiranu.dashchan.util.ResourceUtils;
 import com.mishiranu.dashchan.util.ViewUtils;
 import com.mishiranu.dashchan.widget.SummaryLayout;
@@ -664,7 +663,7 @@ public class VideoUnit {
 						workPlayer.init(partialFile, ReadVideoCallback.this);
 						success = true;
 					} catch (VideoPlayer.InitializationException e) {
-						Log.persistent().stack(e);
+						e.printStackTrace();
 						success = false;
 					} catch (IOException e) {
 						success = false;
@@ -675,10 +674,11 @@ public class VideoUnit {
 							holder.progressBar.setVisible(false, false);
 							if (successFinal) {
 								initializePlayer();
-								instance.galleryInstance.callback.invalidateOptionsMenu();
 								if (downloadTask == null) {
 									seekBar.setSecondaryProgress(seekBar.getMax());
+									holder.loadState = PagerInstance.LoadState.COMPLETE;
 								}
+								instance.galleryInstance.callback.invalidateOptionsMenu();
 							} else {
 								if (downloadTask != null) {
 									if (!downloadTask.isError()) {

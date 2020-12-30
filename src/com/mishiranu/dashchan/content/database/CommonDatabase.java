@@ -6,7 +6,6 @@ import android.database.sqlite.SQLiteOpenHelper;
 import com.mishiranu.dashchan.content.MainApplication;
 import com.mishiranu.dashchan.util.ConcurrentUtils;
 import com.mishiranu.dashchan.util.IOUtils;
-import com.mishiranu.dashchan.util.Log;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
@@ -154,7 +153,7 @@ public class CommonDatabase {
 		}
 	}
 
-	public boolean writeBackup(OutputStream output) throws IOException {
+	public void writeBackup(OutputStream output) throws IOException {
 		File backupFile = MainApplication.getInstance().getDatabasePath(Helper.DATABASE_BACKUP_NAME);
 		try {
 			SQLiteDatabase database = helper.database;
@@ -171,7 +170,6 @@ public class CommonDatabase {
 			try (FileInputStream input = new FileInputStream(backupFile)) {
 				IOUtils.copyStream(input, output);
 			}
-			return true;
 		} finally {
 			for (File file : backupFile.getParentFile().listFiles()) {
 				if (file.getName().startsWith(backupFile.getName())) {
@@ -236,7 +234,7 @@ public class CommonDatabase {
 						db.execSQL("DETACH DATABASE restore");
 					}
 				} catch (IOException e) {
-					Log.persistent().stack(e);
+					e.printStackTrace();
 				} finally {
 					for (File file : restoreFile.getParentFile().listFiles()) {
 						if (file.getName().startsWith(restoreFile.getName())) {

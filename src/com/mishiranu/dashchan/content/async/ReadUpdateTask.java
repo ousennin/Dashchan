@@ -18,7 +18,6 @@ import chan.util.StringUtils;
 import com.mishiranu.dashchan.BuildConfig;
 import com.mishiranu.dashchan.content.FileProvider;
 import com.mishiranu.dashchan.content.model.ErrorItem;
-import com.mishiranu.dashchan.util.Log;
 import java.io.File;
 import java.net.HttpURLConnection;
 import java.util.ArrayList;
@@ -182,9 +181,11 @@ public class ReadUpdateTask extends HttpHolderTask<Void, Pair<ErrorItem, ReadUpd
 		public final long length;
 		public final Uri source;
 		public final byte[] sha256sum;
+		public final ChanManager.Fingerprints fingerprints;
 
 		public PackageItem(String repository, String title, String versionName, long versionCode,
-				int minApiVersion, int maxApiVersion, int apiVersion, long length, Uri source, byte[] sha256sum) {
+				int minApiVersion, int maxApiVersion, int apiVersion, long length, Uri source,
+				byte[] sha256sum, ChanManager.Fingerprints fingerprints) {
 			this.repository = repository;
 			this.title = title;
 			this.versionName = versionName;
@@ -195,6 +196,7 @@ public class ReadUpdateTask extends HttpHolderTask<Void, Pair<ErrorItem, ReadUpd
 			this.length = length;
 			this.source = source;
 			this.sha256sum = sha256sum;
+			this.fingerprints = fingerprints;
 		}
 
 		@Override
@@ -214,6 +216,10 @@ public class ReadUpdateTask extends HttpHolderTask<Void, Pair<ErrorItem, ReadUpd
 			dest.writeLong(length);
 			dest.writeString(source != null ? source.toString() : null);
 			dest.writeByteArray(sha256sum);
+			dest.writeByte((byte) (fingerprints != null ? 1 : 0));
+			if (fingerprints != null) {
+				fingerprints.writeToParcel(dest, flags);
+			}
 		}
 
 		public static final Creator<PackageItem> CREATOR = new Creator<PackageItem>() {
@@ -230,8 +236,10 @@ public class ReadUpdateTask extends HttpHolderTask<Void, Pair<ErrorItem, ReadUpd
 				String sourceString = source.readString();
 				Uri sourceUri = sourceString != null ? Uri.parse(sourceString) : null;
 				byte[] sha256sum = source.createByteArray();
+				ChanManager.Fingerprints fingerprints = source.readByte() != 0
+						? ChanManager.Fingerprints.CREATOR.createFromParcel(source) : null;
 				return new PackageItem(repository, title, versionName, versionCode,
-						minVersion, maxVersion, version, length, sourceUri, sha256sum);
+						minVersion, maxVersion, version, length, sourceUri, sha256sum, fingerprints);
 			}
 
 			@Override
@@ -280,7 +288,7 @@ public class ReadUpdateTask extends HttpHolderTask<Void, Pair<ErrorItem, ReadUpd
 
 	private static PackageItem extractPackageItem(DataVersion dataVersion, JSONObject chanObject,
 			String extensionName, String repository, Uri uri, Long installedCode,
-			ChanManager.Fingerprints fingerprints) throws JSONException {
+			ChanManager.Fingerprints requireFingerprints) throws JSONException {
 		String title;
 		String versionName;
 		long versionCode;
@@ -343,28 +351,24 @@ public class ReadUpdateTask extends HttpHolderTask<Void, Pair<ErrorItem, ReadUpd
 			for (int j = 0; j < fingerprintsArray.length(); j++) {
 				rawFingerprints.add(fingerprintsArray.optString(j));
 			}
-		} else {
+		} else if (!StringUtils.isEmpty(fingerprint)) {
 			rawFingerprints.add(fingerprint);
 		}
-		if (requireFingerprintChecksum && rawFingerprints.isEmpty()) {
-			return null;
-		}
-		if (fingerprints != null) {
-			HashSet<String> fingerprintsSet = new HashSet<>();
-			for (String rawFingerprint : rawFingerprints) {
-				if (!StringUtils.isEmpty(rawFingerprint)) {
-					rawFingerprint = rawFingerprint.replaceAll("[^a-fA-F0-9]", "")
-							.toLowerCase(Locale.US);
-					if (rawFingerprint.length() == 64) {
-						fingerprintsSet.add(rawFingerprint);
-					}
+		HashSet<String> fingerprintsSet = new HashSet<>();
+		for (String rawFingerprint : rawFingerprints) {
+			if (!StringUtils.isEmpty(rawFingerprint)) {
+				rawFingerprint = rawFingerprint.replaceAll("[^a-fA-F0-9]", "").toLowerCase(Locale.US);
+				if (rawFingerprint.length() == 64) {
+					fingerprintsSet.add(rawFingerprint);
 				}
 			}
-			ChanManager.Fingerprints chanFingerprints = new ChanManager
-					.Fingerprints(fingerprintsSet);
-			if (!chanFingerprints.equals(fingerprints)) {
-				return null;
-			}
+		}
+		if (requireFingerprintChecksum && fingerprintsSet.isEmpty()) {
+			return null;
+		}
+		ChanManager.Fingerprints fingerprints = new ChanManager.Fingerprints(fingerprintsSet);
+		if (requireFingerprints != null && !requireFingerprints.equals(fingerprints)) {
+			return null;
 		}
 		if (sha256sumString != null) {
 			sha256sumString = sha256sumString.replaceAll("[^a-fA-F0-9]", "").toLowerCase(Locale.US);
@@ -391,10 +395,10 @@ public class ReadUpdateTask extends HttpHolderTask<Void, Pair<ErrorItem, ReadUpd
 				return null;
 			}
 			return new PackageItem(repository, title, versionName, versionCode,
-					minApiVersion, maxApiVersion, 0, length, sourceUri, sha256sum);
+					minApiVersion, maxApiVersion, 0, length, sourceUri, sha256sum, fingerprints);
 		} else {
 			return new PackageItem(repository, title, versionName, versionCode,
-					0, 0, apiVersion, length, sourceUri, sha256sum);
+					0, 0, apiVersion, length, sourceUri, sha256sum, fingerprints);
 		}
 	}
 
@@ -625,7 +629,7 @@ public class ReadUpdateTask extends HttpHolderTask<Void, Pair<ErrorItem, ReadUpd
 					}
 				}
 			} catch (HttpException | JSONException e) {
-				Log.persistent().stack(e);
+				e.printStackTrace();
 			}
 			if (Thread.currentThread().isInterrupted()) {
 				return Collections.emptyList();
@@ -675,14 +679,14 @@ public class ReadUpdateTask extends HttpHolderTask<Void, Pair<ErrorItem, ReadUpd
 					ChanManager.EXTENSION_NAME_CLIENT, applicationTitle, new ArrayList<>());
 			applicationItem.packageItems.add(new PackageItem(null, null,
 					applicationVersionName, applicationVersionCode,
-					ChanManager.MIN_VERSION, ChanManager.MAX_VERSION, 0, -1, null, null));
+					ChanManager.MIN_VERSION, ChanManager.MAX_VERSION, 0, -1, null, null, null));
 			updateDataMap.put(ChanManager.EXTENSION_NAME_CLIENT, applicationItem);
 			for (ChanManager.ExtensionItem extensionItem : extensionItems) {
 				applicationItem = new ApplicationItem(extensionItem.type == ChanManager.ExtensionItem.Type.LIBRARY
 						? ApplicationItem.Type.LIBRARY : ApplicationItem.Type.CHAN,
 						extensionItem.name, extensionItem.title, new ArrayList<>());
 				applicationItem.packageItems.add(new PackageItem(null, null, extensionItem.versionName,
-						extensionItem.versionCode, 0, 0, extensionItem.apiVersion, -1, null, null));
+						extensionItem.versionCode, 0, 0, extensionItem.apiVersion, -1, null, null, null));
 				updateDataMap.put(extensionItem.name, applicationItem);
 			}
 		}
@@ -733,7 +737,7 @@ public class ReadUpdateTask extends HttpHolderTask<Void, Pair<ErrorItem, ReadUpd
 					}
 				}
 			} catch (JSONException e) {
-				Log.persistent().stack(e);
+				e.printStackTrace();
 			}
 			if (isCancelled()) {
 				return null;
@@ -776,7 +780,7 @@ public class ReadUpdateTask extends HttpHolderTask<Void, Pair<ErrorItem, ReadUpd
 					}
 				}
 			} catch (JSONException e) {
-				Log.persistent().stack(e);
+				e.printStackTrace();
 			}
 			if (isCancelled()) {
 				return null;

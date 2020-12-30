@@ -5,17 +5,18 @@ import android.os.Parcel;
 import android.os.Parcelable;
 import android.util.Pair;
 import chan.content.Chan;
+import chan.http.HttpClient;
 import chan.http.HttpException;
-import chan.http.HttpHolder;
-import chan.http.HttpRequest;
-import chan.http.HttpResponse;
-import chan.util.StringUtils;
+import chan.http.InetSocket;
 import com.mishiranu.dashchan.BuildConfig;
 import com.mishiranu.dashchan.content.model.ErrorItem;
-import com.mishiranu.dashchan.util.Log;
-import java.net.HttpURLConnection;
+import com.mishiranu.dashchan.content.net.SubversionProtocol;
+import java.io.IOException;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
+import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.TreeMap;
@@ -23,7 +24,7 @@ import org.json.JSONArray;
 import org.json.JSONException;
 import org.json.JSONObject;
 
-public class ReadChangelogTask extends HttpHolderTask<Void, Pair<ErrorItem, List<ReadChangelogTask.Entry>>> {
+public class ReadChangelogTask extends ExecutorTask<Void, Pair<ErrorItem, List<ReadChangelogTask.Entry>>> {
 	public interface Callback {
 		void onReadChangelogComplete(List<Entry> entries, ErrorItem errorItem);
 	}
@@ -37,14 +38,34 @@ public class ReadChangelogTask extends HttpHolderTask<Void, Pair<ErrorItem, List
 				this.name = name;
 				this.date = date;
 			}
+
+			public String getMajorMinor() {
+				int index = name.indexOf('.');
+				index = name.indexOf('.', index + 1);
+				return index >= 0 ? name.substring(0, index) : name;
+			}
 		}
 
 		public final List<Version> versions;
-		public final String text;
+		public final List<String> texts;
 
-		public Entry(List<Version> versions, String text) {
+		public Entry(List<Version> versions, List<String> texts) {
 			this.versions = versions;
-			this.text = text;
+			this.texts = texts;
+		}
+
+		private String getSingleMajorMinorOrNull() {
+			String majorMinor = null;
+			for (Version version : versions) {
+				String versionMajorMinor = version.getMajorMinor();
+				if (majorMinor == null) {
+					majorMinor = versionMajorMinor;
+				} else if (!versionMajorMinor.equals(majorMinor)) {
+					majorMinor = null;
+					break;
+				}
+			}
+			return majorMinor;
 		}
 
 		@Override
@@ -59,7 +80,10 @@ public class ReadChangelogTask extends HttpHolderTask<Void, Pair<ErrorItem, List
 				dest.writeString(version.name);
 				dest.writeString(version.date);
 			}
-			dest.writeString(text);
+			dest.writeInt(texts.size());
+			for (String text : texts) {
+				dest.writeString(text);
+			}
 		}
 
 		public static final Creator<Entry> CREATOR = new Creator<Entry>() {
@@ -72,8 +96,13 @@ public class ReadChangelogTask extends HttpHolderTask<Void, Pair<ErrorItem, List
 					String date = source.readString();
 					versions.add(new Version(name, date));
 				}
-				String text = source.readString();
-				return new Entry(versions, text);
+				int textsSize = source.readInt();
+				ArrayList<String> texts = new ArrayList<>(textsSize);
+				for (int i = 0; i < textsSize; i++) {
+					String text = source.readString();
+					texts.add(text);
+				}
+				return new Entry(versions, texts);
 			}
 
 			@Override
@@ -87,75 +116,100 @@ public class ReadChangelogTask extends HttpHolderTask<Void, Pair<ErrorItem, List
 	private final List<Locale> locales;
 
 	public ReadChangelogTask(Callback callback, List<Locale> locales) {
-		super(Chan.getFallback());
 		this.callback = callback;
 		this.locales = locales;
 	}
 
-	private static String testLocale(Uri baseUri, HttpHolder holder, String locale, long code) throws HttpException {
-		HttpResponse response = new HttpRequest(baseUri.buildUpon().appendPath(locale)
-				.appendPath("changelogs").appendPath(code + ".txt").build(), holder)
-				.setHeadMethod().setSuccessOnly(false).perform();
+	private static String decodeDiffToString(byte[] svnDiff) throws IOException {
+		byte[] decoded;
 		try {
-			if (response.getResponseCode() == HttpURLConnection.HTTP_OK) {
-				return locale;
+			decoded = SubversionProtocol.applyDiff(null, svnDiff);
+		} catch (IllegalArgumentException e) {
+			Throwable cause = e.getCause();
+			if (cause instanceof IOException) {
+				throw (IOException) cause;
 			} else {
-				return null;
-			}
-		} finally {
-			response.cleanupAndDisconnect();
-		}
-	}
-
-	private static String testLocale(Uri baseUri, HttpHolder holder,
-			String language, String country, long code) throws HttpException {
-		if (country != null) {
-			String locale = testLocale(baseUri, holder, language + "-" + country, code);
-			if (locale != null) {
-				return locale;
+				throw new IOException(e);
 			}
 		}
-		return testLocale(baseUri, holder, language, code);
+		return decoded != null ? new String(decoded) : null;
 	}
 
 	@Override
-	protected Pair<ErrorItem, List<Entry>> run(HttpHolder holder) {
+	protected Pair<ErrorItem, List<Entry>> run() throws InterruptedException {
+		Uri githubUri = Chan.getFallback().locator.setSchemeIfEmpty(Uri.parse(BuildConfig.GITHUB_URI_METADATA), null);
+		String metadataPath = BuildConfig.GITHUB_PATH_METADATA;
 		try {
-			Uri uri = Chan.getFallback().locator.setSchemeIfEmpty(Uri.parse(BuildConfig.URI_VERSIONS), null);
-			JSONArray versionsArray = new JSONObject(new HttpRequest(uri, holder)
-					.perform().readString()).getJSONArray("versions");
-			long maxCode = 0;
-			for (int i = 0; i < versionsArray.length(); i++) {
-				JSONObject jsonObject = versionsArray.getJSONObject(i);
-				if (jsonObject.optBoolean("changelog")) {
-					maxCode = Math.max(maxCode, jsonObject.getLong("code"));
+			HashMap<String, byte[]> metadataFiles = SubversionProtocol.listGithubFiles(githubUri, metadataPath);
+			if (isCancelled()) {
+				return null;
+			}
+			HashSet<String> metadataDirs = new HashSet<>();
+			for (HashMap.Entry<String, byte[]> entry : metadataFiles.entrySet()) {
+				if (entry.getValue() == null) {
+					metadataDirs.add(entry.getKey());
 				}
+			}
+			if (metadataDirs.isEmpty()) {
+				return new Pair<>(new ErrorItem(ErrorItem.Type.UNKNOWN), null);
+			}
+			byte[] versionsFile = metadataFiles.get("versions.json");
+			if (versionsFile == null) {
+				return new Pair<>(new ErrorItem(ErrorItem.Type.UNKNOWN), null);
+			}
+			JSONArray versionsArray = new JSONObject(decodeDiffToString(versionsFile)).getJSONArray("versions");
+
+			ArrayList<String> downloadLocales = new ArrayList<>();
+			for (Locale locale : locales) {
+				String language = locale.getLanguage();
+				String country = locale.getCountry();
+				String languageCountry = country != null ? language + "-" + country : language;
+				if (metadataDirs.contains(languageCountry)) {
+					downloadLocales.add(languageCountry);
+				} else {
+					if (country == null) {
+						for (String metadataDir : metadataDirs) {
+							if (metadataDir.startsWith(language + "-")) {
+								downloadLocales.add(metadataDir);
+							}
+						}
+					} else if (metadataDirs.contains(language)) {
+						downloadLocales.add(language);
+					}
+				}
+			}
+			for (String fallbackLocaleDir : Arrays.asList("en-US", "en")) {
+				if (metadataDirs.contains(fallbackLocaleDir)) {
+					downloadLocales.add(fallbackLocaleDir);
+				}
+			}
+			if (downloadLocales.isEmpty()) {
+				return new Pair<>(new ErrorItem(ErrorItem.Type.UNKNOWN), null);
 			}
 
-			Uri baseUri;
-			String path = uri.getPath();
-			int index = path.lastIndexOf('/');
-			if (index >= 0) {
-				baseUri = uri.buildUpon().path(path.substring(0, index)).build();
-			} else {
-				baseUri = uri.buildUpon().path("/").build();
-			}
-			String localePath = null;
-			for (Locale locale : locales) {
-				localePath = testLocale(baseUri, holder, locale.getLanguage(),
-						StringUtils.emptyIfNull(locale.getCountry()), maxCode);
-				if (localePath != null) {
-					break;
+			HashSet<String> checkedLocales = new HashSet<>();
+			HashMap<String, byte[]> changelogFiles = null;
+			for (String localeDir : downloadLocales) {
+				if (!checkedLocales.contains(localeDir)) {
+					checkedLocales.add(localeDir);
+					try {
+						changelogFiles = SubversionProtocol.listGithubFiles(githubUri,
+								metadataPath + "/" + localeDir + "/changelogs");
+						if (isCancelled()) {
+							return null;
+						}
+						if (changelogFiles != null && !changelogFiles.isEmpty()) {
+							break;
+						}
+					} catch (HttpException e) {
+						if (!e.isHttpException()) {
+							throw e;
+						}
+					}
 				}
 			}
-			if (localePath == null) {
-				localePath = testLocale(baseUri, holder, "en-US", maxCode);
-			}
-			if (localePath == null) {
-				localePath = testLocale(baseUri, holder, "en", maxCode);
-			}
-			if (localePath == null) {
-				return new Pair<>(new ErrorItem(ErrorItem.Type.UNKNOWN), null);
+			if (changelogFiles == null || changelogFiles.isEmpty()) {
+				throw HttpException.createNotFoundException();
 			}
 
 			TreeMap<Long, Entry> entriesMap = new TreeMap<>();
@@ -165,24 +219,18 @@ public class ReadChangelogTask extends HttpHolderTask<Void, Pair<ErrorItem, List
 				String name = jsonObject.getString("name");
 				String date = jsonObject.getString("date");
 				Entry entry = entriesMap.get(code);
-				if ((entry == null || entry.text == null) && jsonObject.optBoolean("changelog")) {
-					Uri changelogUri = baseUri.buildUpon().appendPath(localePath)
-							.appendPath("changelogs").appendPath(code + ".txt").build();
-					String changelog = null;
-					try {
-						changelog = new HttpRequest(changelogUri, holder).perform().readString();
-					} catch (HttpException e) {
-						if (e.getResponseCode() != HttpURLConnection.HTTP_NOT_FOUND) {
-							throw e;
-						}
-					}
+				if ((entry == null || entry.texts.isEmpty()) && jsonObject.optBoolean("changelog")) {
+					byte[] file = changelogFiles.get(code + ".txt");
+					String changelog = decodeDiffToString(file);
 					if (changelog != null) {
-						entry = new Entry(entry == null ? new ArrayList<>() : entry.versions, changelog);
+						entry = new Entry(entry != null ? entry.versions : new ArrayList<>(),
+								entry != null ? entry.texts : new ArrayList<>());
+						entry.texts.add(changelog);
 						entriesMap.put(code, entry);
 					}
 				}
 				if (entry == null) {
-					entry = new Entry(new ArrayList<>(), null);
+					entry = new Entry(new ArrayList<>(), new ArrayList<>());
 					entriesMap.put(code, entry);
 				}
 				entry.versions.add(new Entry.Version(name, date));
@@ -190,19 +238,37 @@ public class ReadChangelogTask extends HttpHolderTask<Void, Pair<ErrorItem, List
 
 			ArrayList<Entry> entries = new ArrayList<>(entriesMap.size());
 			for (Entry entry : entriesMap.values()) {
-				if (entry.text != null) {
+				if (!entries.isEmpty()) {
+					Entry lastEntry = entries.get(entries.size() - 1);
+					if (entry.texts.isEmpty()) {
+						lastEntry.versions.addAll(entry.versions);
+					} else {
+						String majorMinor = entry.getSingleMajorMinorOrNull();
+						String lastMajorMinor = lastEntry.getSingleMajorMinorOrNull();
+						if (majorMinor != null && majorMinor.equals(lastMajorMinor)) {
+							lastEntry.versions.addAll(entry.versions);
+							lastEntry.texts.addAll(entry.texts);
+						} else {
+							entries.add(entry);
+						}
+					}
+				} else if (!entry.texts.isEmpty()) {
 					entries.add(entry);
-				} else if (!entries.isEmpty()) {
-					entries.get(entries.size() - 1).versions.addAll(entry.versions);
 				}
 			}
 			Collections.reverse(entries);
 			return new Pair<>(null, entries);
-		} catch (JSONException e) {
-			Log.persistent().stack(e);
-			return new Pair<>(new ErrorItem(ErrorItem.Type.INVALID_RESPONSE), null);
 		} catch (HttpException e) {
 			return new Pair<>(e.getErrorItemAndHandle(), null);
+		} catch (InetSocket.InvalidCertificateException e) {
+			e.printStackTrace();
+			return new Pair<>(new ErrorItem(ErrorItem.Type.INVALID_CERTIFICATE), null);
+		} catch (IOException e) {
+			e.printStackTrace();
+			return new Pair<>(HttpClient.transformIOException(e).getErrorItemAndHandle(), null);
+		} catch (JSONException e) {
+			e.printStackTrace();
+			return new Pair<>(new ErrorItem(ErrorItem.Type.INVALID_RESPONSE), null);
 		}
 	}
 

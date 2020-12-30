@@ -511,7 +511,7 @@ public class DrawerForm extends RecyclerView.Adapter<DrawerForm.ViewHolder> impl
 			} else if (!FavoritesStorage.getInstance().hasFavorite(chanName, boardName, threadNumber)) {
 				dialogMenu.add(R.string.add_to_favorites, () -> {
 					if (isThread) {
-						FavoritesStorage.getInstance().add(chanName, boardName, threadNumber, title);
+						FavoritesStorage.getInstance().add(chanName, boardName, threadNumber, title, true);
 					} else {
 						FavoritesStorage.getInstance().add(chanName, boardName);
 					}
@@ -1650,7 +1650,7 @@ public class DrawerForm extends RecyclerView.Adapter<DrawerForm.ViewHolder> impl
 				for (DrawerForm.ListItem listItem : chans) {
 					chanNames.add(listItem.chanName);
 				}
-				ChanManager.getInstance().setChansOrder(chanNames);
+				Preferences.setChansOrder(chanNames);
 				// Regroup favorite threads
 				if (mergeChans) {
 					updateItems(false, true);

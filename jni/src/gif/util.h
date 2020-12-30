@@ -3,9 +3,9 @@
 
 #define UNUSED __attribute__((unused))
 
-#ifdef DEBUG
+#ifdef DEBUG_VERBOSE
 #include <android/log.h>
-#define LOG(...) __android_log_print(ANDROID_LOG_DEBUG, "Dashchan", __VA_ARGS__)
+#define LOG(...) __android_log_print(ANDROID_LOG_DEBUG, "Gif", __VA_ARGS__)
 #else
 #define LOG(...)
 #endif

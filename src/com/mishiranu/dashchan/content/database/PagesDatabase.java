@@ -23,7 +23,6 @@ import com.mishiranu.dashchan.content.storage.FavoritesStorage;
 import com.mishiranu.dashchan.util.ConcurrentUtils;
 import com.mishiranu.dashchan.util.FlagUtils;
 import com.mishiranu.dashchan.util.Hasher;
-import com.mishiranu.dashchan.util.Log;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.IOException;
@@ -150,18 +149,6 @@ public class PagesDatabase {
 				}
 			}
 			return new Meta(validator, archivedThreadUri, uniquePosters, deleted, error);
-		}
-	}
-
-	public static class ThreadSummary {
-		public final PostNumber originalPostNumber;
-		public final PostNumber lastExistingPostNumber;
-		public final boolean cyclical;
-
-		public ThreadSummary(PostNumber originalPostNumber, PostNumber lastExistingPostNumber, boolean cyclical) {
-			this.originalPostNumber = originalPostNumber;
-			this.lastExistingPostNumber = lastExistingPostNumber;
-			this.cyclical = cyclical;
 		}
 	}
 
@@ -583,7 +570,7 @@ public class PagesDatabase {
 				try (JsonSerial.Reader reader = JsonSerial.reader(cursor.getBlob(1))) {
 					meta = Meta.deserialize(reader, deleted, error);
 				} catch (IOException | ParseException e) {
-					Log.persistent().stack(e);
+					e.printStackTrace();
 					return null;
 				}
 			}
@@ -613,30 +600,35 @@ public class PagesDatabase {
 				"WHERE " + filter.value, filter.args);
 	}
 
-	public ThreadSummary getThreadSummary(@NonNull ThreadKey threadKey) {
+	private static String orderByPostNumber(boolean desc) {
+		String order = (desc ? "DESC" : "ASC");
+		return Schema.Posts.Columns.POST_NUMBER_MAJOR + " " + order + ", " +
+				Schema.Posts.Columns.POST_NUMBER_MINOR + " " + order;
+	}
+
+	public PostNumber getLastExistingPostNumber(@NonNull ThreadKey threadKey) {
 		Objects.requireNonNull(threadKey);
-		String[] lastPostProjection = {Schema.Posts.Columns.POST_NUMBER_MAJOR, Schema.Posts.Columns.POST_NUMBER_MINOR};
-		Expression.Filter lastPostFilter = threadKey.filterPosts()
+		String[] projection = {Schema.Posts.Columns.POST_NUMBER_MAJOR, Schema.Posts.Columns.POST_NUMBER_MINOR};
+		Expression.Filter filter = threadKey.filterPosts()
 				.raw("NOT (" + Schema.Posts.Columns.FLAGS + " & " + Schema.Posts.Flags.DELETED + ")")
 				.build();
-		PostNumber lastExistingPostNumber;
-		try (Cursor cursor = database.query(Schema.Posts.TABLE_NAME, lastPostProjection, lastPostFilter.value,
-				lastPostFilter.args, null, null, Schema.Posts.Columns.POST_NUMBER_MAJOR + " DESC, " +
-						Schema.Posts.Columns.POST_NUMBER_MINOR + " DESC", "1")) {
-			lastExistingPostNumber = cursor.moveToFirst() ? new PostNumber(cursor.getInt(0), cursor.getInt(1)) : null;
+		try (Cursor cursor = database.query(Schema.Posts.TABLE_NAME, projection, filter.value,
+				filter.args, null, null, orderByPostNumber(true), "1")) {
+			return cursor.moveToFirst() ? new PostNumber(cursor.getInt(0), cursor.getInt(1)) : null;
 		}
-		String[] originalPostProjection = {Schema.Posts.Columns.POST_NUMBER_MAJOR,
+	}
+
+	public Post getOriginalPost(@NonNull ThreadKey threadKey) {
+		Objects.requireNonNull(threadKey);
+		String[] projection = {Schema.Posts.Columns.POST_NUMBER_MAJOR,
 				Schema.Posts.Columns.POST_NUMBER_MINOR, Schema.Posts.Columns.DATA};
-		Expression.Filter originalPostFilter = threadKey.filterPosts().build();
-		PostNumber originalPostNumber = null;
-		boolean cyclical = false;
-		try (Cursor cursor = database.query(Schema.Posts.TABLE_NAME, originalPostProjection, originalPostFilter.value,
-				originalPostFilter.args, null, null, Schema.Posts.Columns.POST_NUMBER_MAJOR + " ASC, " +
-						Schema.Posts.Columns.POST_NUMBER_MINOR + " ASC", "1")) {
+		Expression.Filter filter = threadKey.filterPosts().build();
+		try (Cursor cursor = database.query(Schema.Posts.TABLE_NAME, projection,
+				filter.value, filter.args, null, null, orderByPostNumber(false), "1")) {
 			if (cursor.moveToFirst()) {
-				originalPostNumber = new PostNumber(cursor.getInt(0), cursor.getInt(1));
+				PostNumber postNumber = new PostNumber(cursor.getInt(0), cursor.getInt(1));
 				try (JsonSerial.Reader reader = JsonSerial.reader(cursor.getBlob(2))) {
-					cyclical = Post.deserialize(originalPostNumber, false, reader).isCyclical();
+					return Post.deserialize(postNumber, false, reader);
 				} catch (IOException e) {
 					throw new RuntimeException(e);
 				} catch (ParseException e) {
@@ -644,7 +636,7 @@ public class PagesDatabase {
 				}
 			}
 		}
-		return new ThreadSummary(originalPostNumber, lastExistingPostNumber, cyclical);
+		return null;
 	}
 
 	public List<PostNumber> getPostNumbers(@NonNull ThreadKey threadKey) {
@@ -652,14 +644,14 @@ public class PagesDatabase {
 		String[] projection = {Schema.Posts.Columns.POST_NUMBER_MAJOR, Schema.Posts.Columns.POST_NUMBER_MINOR};
 		Expression.Filter filter = threadKey.filterPosts().build();
 		ArrayList<PostNumber> postNumbers;
-		try (Cursor cursor = database.query(Schema.Posts.TABLE_NAME, projection, filter.value, filter.args, null, null,
-				Schema.Posts.Columns.POST_NUMBER_MAJOR + " ASC, " + Schema.Posts.Columns.POST_NUMBER_MINOR + " ASC")) {
+		try (Cursor cursor = database.query(Schema.Posts.TABLE_NAME, projection,
+				filter.value, filter.args, null, null, orderByPostNumber(false))) {
 			postNumbers = new ArrayList<>(cursor.getCount());
 			while (cursor.moveToNext()) {
 				postNumbers.add(new PostNumber(cursor.getInt(0), cursor.getInt(1)));
 			}
 		}
-		return postNumbers != null ? postNumbers : Collections.emptyList();
+		return postNumbers;
 	}
 
 	public WatcherState getWatcherState(@NonNull ThreadKey threadKey) {
@@ -716,6 +708,8 @@ public class PagesDatabase {
 		Expression.Filter filter = threadKey.filterMeta().build();
 		ContentValues values = new ContentValues();
 		values.put(Schema.Meta.Columns.TIME, time);
+		int flags = (meta.deleted ? Schema.Meta.Flags.DELETED : 0) | (meta.error ? Schema.Meta.Flags.ERROR : 0);
+		values.put(Schema.Meta.Columns.FLAGS, flags);
 		try (JsonSerial.Writer writer = JsonSerial.writer()) {
 			meta.serialize(writer);
 			values.put(Schema.Meta.Columns.DATA, writer.build());
@@ -1282,7 +1276,7 @@ public class PagesDatabase {
 		try (LegacyObjectInputStream input = new LegacyObjectInputStream(new FileInputStream(postsFile))) {
 			legacyPosts = (Legacy.Posts) input.readObject();
 		} catch (Exception e) {
-			Log.persistent().stack(e);
+			e.printStackTrace();
 			return false;
 		} finally {
 			postsFile.delete();
@@ -1403,7 +1397,7 @@ public class PagesDatabase {
 				posts.get(i).serialize(writer);
 				data[i] = writer.build();
 			} catch (IOException e) {
-				Log.persistent().stack(e);
+				e.printStackTrace();
 				return false;
 			}
 		}
@@ -1436,7 +1430,7 @@ public class PagesDatabase {
 			try {
 				upsertMeta(threadKey, time, meta);
 			} catch (IOException e) {
-				Log.persistent().stack(e);
+				e.printStackTrace();
 				return false;
 			}
 			int[] index = {0};

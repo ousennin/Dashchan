@@ -2,7 +2,6 @@ package com.mishiranu.dashchan.ui.preference.core;
 
 import android.app.AlertDialog;
 import android.content.Context;
-import android.content.SharedPreferences;
 import android.content.res.ColorStateList;
 import android.content.res.TypedArray;
 import android.graphics.drawable.Drawable;
@@ -23,6 +22,7 @@ import com.mishiranu.dashchan.R;
 import com.mishiranu.dashchan.ui.ContentFragment;
 import com.mishiranu.dashchan.util.ListViewUtils;
 import com.mishiranu.dashchan.util.ResourceUtils;
+import com.mishiranu.dashchan.util.SharedPreferences;
 import com.mishiranu.dashchan.util.ViewUtils;
 import com.mishiranu.dashchan.widget.DividerItemDecoration;
 import com.mishiranu.dashchan.widget.ExpandedLayout;
@@ -98,8 +98,8 @@ public abstract class PreferenceFragment extends ContentFragment {
 		recyclerView = new PaddedRecyclerView(container.getContext());
 		recyclerView.setId(android.R.id.list);
 		recyclerView.setMotionEventSplittingEnabled(false);
-		recyclerView.setClipToPadding(false);
 		recyclerView.setVerticalScrollBarEnabled(true);
+		recyclerView.setClipToPadding(false);
 		recyclerView.setLayoutManager(new LinearLayoutManager(container.getContext()));
 		recyclerView.setAdapter(new Adapter());
 		recyclerView.addItemDecoration(new DividerItemDecoration(recyclerView.getContext(), (c, position) -> {

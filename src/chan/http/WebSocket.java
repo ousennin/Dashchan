@@ -11,6 +11,7 @@ import chan.util.StringUtils;
 import com.mishiranu.dashchan.content.AdvancedPreferences;
 import com.mishiranu.dashchan.content.Preferences;
 import com.mishiranu.dashchan.content.model.ErrorItem;
+import com.mishiranu.dashchan.content.net.RelayBlockResolver;
 import com.mishiranu.dashchan.util.IOUtils;
 import java.io.BufferedInputStream;
 import java.io.BufferedOutputStream;
@@ -20,7 +21,6 @@ import java.io.InputStream;
 import java.io.OutputStream;
 import java.io.UnsupportedEncodingException;
 import java.net.HttpURLConnection;
-import java.net.InetSocketAddress;
 import java.net.Proxy;
 import java.net.Socket;
 import java.net.URL;
@@ -37,8 +37,6 @@ import java.util.Random;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
-import javax.net.SocketFactory;
-import javax.net.ssl.SSLSocket;
 
 @Public
 public final class WebSocket {
@@ -52,7 +50,7 @@ public final class WebSocket {
 	private ArrayList<Pair<String, String>> headers;
 	private CookieBuilder cookieBuilder;
 
-	private Socket socket;
+	private InetSocket socket;
 	private InputStream inputStream;
 	private OutputStream outputStream;
 	private volatile boolean closed = false;
@@ -129,7 +127,7 @@ public final class WebSocket {
 	}
 
 	private WebSocket addHeader(Pair<String, String> header) {
-		if (header != null) {
+		if (header != null && header.first != null && header.second != null) {
 			if (headers == null) {
 				headers = new ArrayList<>();
 			}
@@ -326,11 +324,11 @@ public final class WebSocket {
 	}
 
 	private static class SocketResult {
-		public final Socket socket;
+		public final InetSocket socket;
 		public final InputStream inputStream;
 		public final OutputStream outputStream;
 
-		public SocketResult(Socket socket, InputStream inputStream, OutputStream outputStream) {
+		public SocketResult(InetSocket socket, InputStream inputStream, OutputStream outputStream) {
 			this.socket = socket;
 			this.inputStream = inputStream;
 			this.outputStream = outputStream;
@@ -340,9 +338,9 @@ public final class WebSocket {
 	@SuppressWarnings("ConditionalBreakInInfiniteLoop")
 	private SocketResult openSocket(Uri uri, boolean verifyCertificate, int attempts)
 			throws HttpException, IOException {
-		Socket socket = null;
+		InetSocket socket = null;
 		try {
-			URL url = client.encodeUri(uri);
+			URL url = HttpClient.encodeUri(uri);
 			String scheme = uri.getScheme();
 			boolean secure;
 			int port = url.getPort();
@@ -360,29 +358,25 @@ public final class WebSocket {
 				throw new HttpException(ErrorItem.Type.UNSUPPORTED_SCHEME, false, false);
 			}
 
-			InetSocketAddress address;
+			boolean resolve;
 			Proxy proxy = client.getProxy(holder.chan);
+			InetSocket.Builder.Factory factory;
 			if (proxy != null && proxy.type() == Proxy.Type.HTTP) {
 				// TODO Add support for HTTP proxy
 				throw new HttpException(ErrorItem.Type.DOWNLOAD, false, false);
 			} if (proxy != null && proxy.type() == Proxy.Type.SOCKS) {
-				address = InetSocketAddress.createUnresolved(url.getHost(), port);
-				socket = new Socket(proxy);
+				resolve = false;
+				factory = () -> new Socket(proxy);
 			} else {
-				address = new InetSocketAddress(url.getHost(), port);
-				socket = SocketFactory.getDefault().createSocket();
+				resolve = true;
+				factory = InetSocket.Builder.Factory.DEFAULT;
 			}
-			socket.setSoTimeout(Math.max(readTimeout, 60000));
-			socket.connect(address, connectTimeout);
-			if (secure) {
-				SSLSocket sslSocket = (SSLSocket) client.getSSLSocketFactory(verifyCertificate)
-						.createSocket(socket, url.getHost(), port, true);
-				socket = sslSocket;
-				sslSocket.startHandshake();
-				if (!client.getHostnameVerifier(verifyCertificate)
-						.verify(uri.getHost(), sslSocket.getSession())) {
-					throw new HttpException(ErrorItem.Type.INVALID_CERTIFICATE, false, false);
-				}
+			try {
+				socket = new InetSocket.Builder(url.getHost(), port, resolve)
+						.setFactory(factory).setSecure(secure, verifyCertificate)
+						.setTimeouts(connectTimeout, readTimeout).open();
+			} catch (InetSocket.InvalidCertificateException e) {
+				throw new HttpException(ErrorItem.Type.INVALID_CERTIFICATE, false, false, e);
 			}
 
 			byte[] webSocketKey = new byte[16];
@@ -395,6 +389,7 @@ public final class WebSocket {
 			OutputStream outputStream = new BufferedOutputStream(socket.getOutputStream());
 			StringBuilder requestBuilder = new StringBuilder();
 			requestBuilder.append("GET ").append(url.getFile()).append(" HTTP/1.1\r\n");
+			String userAgent = null;
 			boolean addHost = true;
 			boolean addOrigin = true;
 			boolean addUserAgent = true;
@@ -410,6 +405,7 @@ public final class WebSocket {
 							break;
 						}
 						case "user-agent": {
+							userAgent = header.second;
 							addUserAgent = false;
 							break;
 						}
@@ -448,14 +444,17 @@ public final class WebSocket {
 			requestBuilder.append("Sec-WebSocket-Version: 13\r\n");
 			requestBuilder.append("Sec-WebSocket-Key: ").append(webSocketKeyEncoded).append("\r\n");
 			requestBuilder.append("Sec-WebSocket-Protocol: chat, superchat\r\n");
-			CookieBuilder cookieBuilder = client.obtainModifiedCookieBuilder(this.cookieBuilder, holder.chan);
+			if (addUserAgent) {
+				userAgent = AdvancedPreferences.getUserAgent(holder.chan.name);
+				requestBuilder.append("User-Agent: ").append(userAgent.replaceAll("[\r\n]", "")).append("\r\n");
+			}
+			RelayBlockResolver.Identifier resolverIdentifier = new RelayBlockResolver
+					.Identifier(userAgent, addUserAgent);
+			CookieBuilder cookieBuilder = client.obtainModifiedCookieBuilder(this.cookieBuilder,
+					holder.chan, resolverIdentifier);
 			if (cookieBuilder != null) {
 				requestBuilder.append("Cookie: ").append(cookieBuilder.build().replaceAll("[\r\n]", ""))
 						.append("\r\n");
-			}
-			if (addUserAgent) {
-				requestBuilder.append("User-Agent: ").append(AdvancedPreferences.getUserAgent(holder.chan.name)
-						.replaceAll("[\r\n]", "")).append("\r\n");
 			}
 			requestBuilder.append("\r\n");
 			@SuppressWarnings("CharsetObjectCanBeUsed")
@@ -509,7 +508,7 @@ public final class WebSocket {
 								if (header.toLowerCase(Locale.US).startsWith("location:")) {
 									Uri redirectedUri = client.obtainRedirectedUri(uri,
 											header.substring(header.indexOf(':') + 1).trim());
-									closeSocket(socket);
+									IOUtils.close(socket);
 									socket = null;
 									scheme = redirectedUri.getScheme();
 									boolean newSecure = "https".equals(scheme) || "wss".equals(scheme);
@@ -562,22 +561,12 @@ public final class WebSocket {
 				socket = null;
 			}
 		} finally {
-			closeSocket(socket);
-		}
-	}
-
-	private void closeSocket(Socket socket) {
-		if (socket != null) {
-			try {
-				socket.close();
-			} catch (IOException e) {
-				// Ignore exception
-			}
+			IOUtils.close(socket);
 		}
 	}
 
 	private void closeSocket() {
-		Socket socket = this.socket;
+		InetSocket socket = this.socket;
 		closed = true;
 		this.socket = null;
 		if (socket != null) {
@@ -585,7 +574,7 @@ public final class WebSocket {
 			readQueue.add(END_READ_FRAME);
 			IOUtils.close(inputStream);
 			IOUtils.close(outputStream);
-			closeSocket(socket);
+			IOUtils.close(socket);
 		}
 	}
 

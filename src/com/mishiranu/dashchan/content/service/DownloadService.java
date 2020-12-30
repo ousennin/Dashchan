@@ -22,6 +22,7 @@ import android.util.DisplayMetrics;
 import android.util.Pair;
 import androidx.core.app.NotificationCompat;
 import chan.content.Chan;
+import chan.content.ChanManager;
 import chan.util.CommonUtils;
 import chan.util.DataFile;
 import chan.util.StringUtils;
@@ -40,7 +41,6 @@ import com.mishiranu.dashchan.ui.MainActivity;
 import com.mishiranu.dashchan.util.AndroidUtils;
 import com.mishiranu.dashchan.util.ConcurrentUtils;
 import com.mishiranu.dashchan.util.IOUtils;
-import com.mishiranu.dashchan.util.Log;
 import com.mishiranu.dashchan.util.MimeTypes;
 import com.mishiranu.dashchan.util.WeakObservable;
 import com.mishiranu.dashchan.widget.ClickableToast;
@@ -149,16 +149,13 @@ public class DownloadService extends BaseService implements ReadFileTask.Callbac
 			File file = getSavedDownloadRetryFile();
 			file.delete();
 			Parcel parcel = Parcel.obtain();
-			FileOutputStream output = null;
-			try {
+			try (FileOutputStream output = new FileOutputStream(file)) {
 				parcel.writeTypedList(new ArrayList<>(errorTasks.values()));
 				byte[] data = parcel.marshall();
-				output = new FileOutputStream(file);
 				IOUtils.copyStream(new ByteArrayInputStream(data), output);
 			} catch (Exception e) {
 				file.delete();
 			} finally {
-				IOUtils.close(output);
 				parcel.recycle();
 			}
 		}
@@ -223,7 +220,7 @@ public class DownloadService extends BaseService implements ReadFileTask.Callbac
 		String key = getTargetPathKey(taskData.target, StringUtils.emptyIfNull(taskData.path));
 		DataFile file = cachedDirectories.get(key);
 		if (file == null) {
-			file = DataFile.obtain(this, taskData.target, taskData.path);
+			file = DataFile.obtain(taskData.target, taskData.path);
 			if (file.exists()) {
 				cachedDirectories.put(key, file);
 			}
@@ -254,24 +251,21 @@ public class DownloadService extends BaseService implements ReadFileTask.Callbac
 			TaskData taskData = iterator.next();
 			iterator.remove();
 			if (taskData.input != null) {
-				OutputStream output = null;
 				boolean success = false;
-				try {
-					output = getDataFile(taskData).openOutputStream();
-					IOUtils.copyStream(taskData.input, output);
+				try (InputStream input = taskData.input;
+						OutputStream output = getDataFile(taskData).openOutputStream()) {
+					IOUtils.copyStream(input, output);
 					success = true;
 				} catch (IOException e) {
-					Log.persistent().stack(e);
-				} finally {
-					IOUtils.close(taskData.input);
-					IOUtils.close(output);
+					e.printStackTrace();
 				}
 				onFinishDownloadingInternal(success, new TaskData(taskData.chanName, taskData.overwrite,
 						null, taskData.target, taskData.path, taskData.name, taskData.allowWrite));
 			} else {
 				Chan chan = Chan.getPreferred(taskData.chanName, taskData.uri);
 				ReadFileTask readFileTask = ReadFileTask.createShared(this, chan,
-						taskData.uri, getDataFile(taskData), taskData.overwrite, taskData.checkSha256);
+						taskData.uri, getDataFile(taskData), taskData.overwrite,
+						taskData.checkSha256, taskData.checkFingerprints);
 				activeTask = new Pair<>(taskData, readFileTask);
 				readFileTask.execute(SINGLE_THREAD_EXECUTOR);
 			}
@@ -321,8 +315,8 @@ public class DownloadService extends BaseService implements ReadFileTask.Callbac
 								directRequest.target, directRequest.path, downloadItem.name, directRequest.allowWrite));
 					} else {
 						for (DownloadItem downloadItem : directRequest.downloadItems) {
-							enqueue(new TaskData(downloadItem.chanName, directRequest.overwrite,
-									downloadItem.uri, downloadItem.checkSha256, directRequest.target,
+							enqueue(new TaskData(downloadItem.chanName, directRequest.overwrite, downloadItem.uri,
+									downloadItem.checkSha256, downloadItem.checkFingerprints, directRequest.target,
 									directRequest.path, downloadItem.name, directRequest.allowWrite));
 						}
 					}
@@ -380,7 +374,7 @@ public class DownloadService extends BaseService implements ReadFileTask.Callbac
 		DataFile lastExistingFile = null;
 		HashSet<String> keys = new HashSet<>();
 		ArrayList<DownloadItem> availableItems = new ArrayList<>();
-		DataFile parent = DataFile.obtain(this, directRequest.target, directRequest.path);
+		DataFile parent = DataFile.obtain(directRequest.target, directRequest.path);
 		HashMap<String, DataFile> children = new HashMap<>();
 		List<DataFile> childrenList = parent.getChildren();
 		if (childrenList != null) {
@@ -443,7 +437,7 @@ public class DownloadService extends BaseService implements ReadFileTask.Callbac
 		String path = replaceRequest.directRequest.path;
 		List<DownloadItem> downloadItems = replaceRequest.directRequest.downloadItems;
 		ArrayList<DownloadItem> finalItems = new ArrayList<>(downloadItems.size());
-		DataFile parent = DataFile.obtain(this, target, path);
+		DataFile parent = DataFile.obtain(target, path);
 		HashSet<String> children = new HashSet<>();
 		List<DataFile> childrenList = parent.getChildren();
 		if (childrenList != null) {
@@ -471,8 +465,8 @@ public class DownloadService extends BaseService implements ReadFileTask.Callbac
 				} while (children.contains(name.toLowerCase(Locale.getDefault())) ||
 						keys.contains(key) || activeKeys.contains(key));
 				keys.add(key);
-				finalItems.add(new DownloadItem(downloadItem.chanName,
-						downloadItem.uri, name, downloadItem.checkSha256));
+				finalItems.add(new DownloadItem(downloadItem.chanName, downloadItem.uri, name,
+						downloadItem.checkSha256, downloadItem.checkFingerprints));
 			}
 			if (Thread.interrupted()) {
 				throw new InterruptedException();
@@ -609,19 +603,16 @@ public class DownloadService extends BaseService implements ReadFileTask.Callbac
 					File file = getSavedDownloadRetryFile();
 					if (file.exists()) {
 						Parcel parcel = Parcel.obtain();
-						FileInputStream input = null;
 						ByteArrayOutputStream output = new ByteArrayOutputStream();
-						try {
-							input = new FileInputStream(file);
+						try (FileInputStream input = new FileInputStream(file)) {
 							IOUtils.copyStream(input, output);
 							byte[] data = output.toByteArray();
 							parcel.unmarshall(data, 0, data.length);
 							parcel.setDataPosition(0);
 							errorTasks.addAll(parcel.createTypedArrayList(TaskData.CREATOR));
 						} catch (Exception e) {
-							// Ignore exception
+							// Ignore
 						} finally {
-							IOUtils.close(input);
 							parcel.recycle();
 							file.delete();
 						}
@@ -668,6 +659,8 @@ public class DownloadService extends BaseService implements ReadFileTask.Callbac
 			}
 			accumulateState = false;
 			return () -> {
+				boolean accumulateState = this.accumulateState;
+				this.accumulateState = null;
 				if (accumulateState) {
 					handleRequests();
 				}
@@ -690,7 +683,7 @@ public class DownloadService extends BaseService implements ReadFileTask.Callbac
 
 		public void downloadDirect(DataFile.Target target, String path, String name, InputStream input) {
 			directRequests.add(new DirectRequest(target, path, true,
-					Collections.singletonList(new DownloadItem(null, null, name, null)), input, false));
+					Collections.singletonList(new DownloadItem(null, null, name, null, null)), input, false));
 			handleRequestsOrAccumulate();
 		}
 
@@ -841,13 +834,14 @@ public class DownloadService extends BaseService implements ReadFileTask.Callbac
 		public final InputStream input;
 		public final Uri uri;
 		public final byte[] checkSha256;
+		public final ChanManager.Fingerprints checkFingerprints;
 		public final DataFile.Target target;
 		public final String path;
 		public final String name;
 		public final boolean allowWrite;
 
 		private TaskData(String chanName, boolean finishedFromCache, boolean overwrite,
-				InputStream input, Uri uri, byte[] checkSha256,
+				InputStream input, Uri uri, byte[] checkSha256, ChanManager.Fingerprints checkFingerprints,
 				DataFile.Target target, String path, String name, boolean allowWrite) {
 			this.chanName = chanName;
 			this.finishedFromCache = finishedFromCache;
@@ -855,6 +849,7 @@ public class DownloadService extends BaseService implements ReadFileTask.Callbac
 			this.input = input;
 			this.uri = uri;
 			this.checkSha256 = checkSha256;
+			this.checkFingerprints = checkFingerprints;
 			this.target = target;
 			this.path = path;
 			this.name = name;
@@ -863,17 +858,19 @@ public class DownloadService extends BaseService implements ReadFileTask.Callbac
 
 		public TaskData(String chanName, boolean overwrite,
 				InputStream input, DataFile.Target target, String path, String name, boolean allowWrite) {
-			this(chanName, true, overwrite, input, null, null, target, path, name, allowWrite);
+			this(chanName, true, overwrite, input, null, null, null, target, path, name, allowWrite);
 		}
 
 		public TaskData(String chanName, boolean overwrite,
-				Uri from, byte[] checkSha256, DataFile.Target target, String path, String name, boolean allowWrite) {
-			this(chanName, false, overwrite, null, from, checkSha256, target, path, name, allowWrite);
+				Uri from, byte[] checkSha256, ChanManager.Fingerprints checkFingerprints,
+				DataFile.Target target, String path, String name, boolean allowWrite) {
+			this(chanName, false, overwrite, null, from, checkSha256, checkFingerprints,
+					target, path, name, allowWrite);
 		}
 
 		public TaskData newFinishedFromCache(boolean finishedFromCache) {
 			return this.finishedFromCache == finishedFromCache ? this : new TaskData(chanName, finishedFromCache,
-					overwrite, input, uri, checkSha256, target, path, name, allowWrite);
+					overwrite, input, uri, checkSha256, checkFingerprints, target, path, name, allowWrite);
 		}
 
 		public String getKey() {
@@ -889,6 +886,10 @@ public class DownloadService extends BaseService implements ReadFileTask.Callbac
 		public void writeToParcel(Parcel dest, int flags) {
 			dest.writeString(chanName);
 			dest.writeByte((byte) (finishedFromCache ? 1 : 0));
+			dest.writeByte((byte) (checkFingerprints != null ? 1 : 0));
+			if (checkFingerprints != null) {
+				checkFingerprints.writeToParcel(dest, flags);
+			}
 			dest.writeByte((byte) (overwrite ? 1 : 0));
 			dest.writeParcelable(uri, flags);
 			dest.writeByteArray(checkSha256);
@@ -906,12 +907,14 @@ public class DownloadService extends BaseService implements ReadFileTask.Callbac
 				boolean overwrite = source.readByte() != 0;
 				Uri uri = source.readParcelable(getClass().getClassLoader());
 				byte[] checkSha256 = source.createByteArray();
+				ChanManager.Fingerprints checkFingerprints = source.readByte() != 0
+						? ChanManager.Fingerprints.CREATOR.createFromParcel(source) : null;
 				DataFile.Target target = DataFile.Target.valueOf(source.readString());
 				String path = source.readString();
 				String name = source.readString();
 				boolean allowWrite = source.readByte() != 0;
-				return new TaskData(chanName, finishedFromCache, overwrite, null, uri, checkSha256,
-						target, path, name, allowWrite);
+				return new TaskData(chanName, finishedFromCache, overwrite, null, uri,
+						checkSha256, checkFingerprints, target, path, name, allowWrite);
 			}
 
 			@Override
@@ -943,15 +946,7 @@ public class DownloadService extends BaseService implements ReadFileTask.Callbac
 
 	private void setBuilderImage(DataFile file) {
 		if (file.exists()) {
-			FileHolder fileHolder;
-			Pair<File, Uri> fileOrUri = file.getFileOrUri();
-			if (fileOrUri.first != null) {
-				fileHolder = FileHolder.obtain(fileOrUri.first);
-			} else if (fileOrUri.second != null) {
-				fileHolder = FileHolder.obtain(this, fileOrUri.second);
-			} else {
-				fileHolder = null;
-			}
+			FileHolder fileHolder = FileHolder.obtain(file);
 			if (fileHolder != null) {
 				DisplayMetrics metrics = getResources().getDisplayMetrics();
 				int size = Math.max(metrics.widthPixels, metrics.heightPixels);
@@ -1393,7 +1388,7 @@ public class DownloadService extends BaseService implements ReadFileTask.Callbac
 			for (RequestItem requestItem : items) {
 				downloadItems.add(new DownloadItem(chanName, requestItem.uri, getDesiredFileName(requestItem.uri,
 						requestItem.fileName, originalName ? requestItem.originalName : null, detailName,
-						chanName, boardName, threadNumber), null));
+						chanName, boardName, threadNumber), null, null));
 			}
 			return new DirectRequest(DataFile.Target.DOWNLOADS, path, true, downloadItems, null, allowWrite);
 		}
@@ -1424,7 +1419,7 @@ public class DownloadService extends BaseService implements ReadFileTask.Callbac
 		public DirectRequest complete(String path, boolean detailName, boolean originalName) {
 			String fileName = detailName ? getFileNameWithChanBoardThreadData(this.fileName,
 					chanName, boardName, threadNumber) : this.fileName;
-			DownloadItem downloadItem = new DownloadItem(chanName, null, fileName, null);
+			DownloadItem downloadItem = new DownloadItem(chanName, null, fileName, null, null);
 			return new DirectRequest(DataFile.Target.DOWNLOADS, path, true,
 					Collections.singletonList(downloadItem), input, allowWrite);
 		}
@@ -1454,12 +1449,15 @@ public class DownloadService extends BaseService implements ReadFileTask.Callbac
 		public final Uri uri;
 		public final String name;
 		public final byte[] checkSha256;
+		public final ChanManager.Fingerprints checkFingerprints;
 
-		public DownloadItem(String chanName, Uri uri, String name, byte[] checkSha256) {
+		public DownloadItem(String chanName, Uri uri, String name,
+				byte[] checkSha256, ChanManager.Fingerprints checkFingerprints) {
 			this.chanName = chanName;
 			this.uri = uri;
 			this.name = name;
 			this.checkSha256 = checkSha256;
+			this.checkFingerprints = checkFingerprints;
 		}
 
 		@Override
@@ -1473,6 +1471,10 @@ public class DownloadService extends BaseService implements ReadFileTask.Callbac
 			dest.writeString(uri != null ? uri.toString() : null);
 			dest.writeString(name);
 			dest.writeByteArray(checkSha256);
+			dest.writeByte((byte) (checkFingerprints != null ? 1 : 0));
+			if (checkFingerprints != null) {
+				checkFingerprints.writeToParcel(dest, flags);
+			}
 		}
 
 		public static final Creator<DownloadItem> CREATOR = new Creator<DownloadItem>() {
@@ -1487,7 +1489,10 @@ public class DownloadService extends BaseService implements ReadFileTask.Callbac
 				String uriString = source.readString();
 				String name = source.readString();
 				byte[] checkSha256 = source.createByteArray();
-				return new DownloadItem(chanName, uriString != null ? Uri.parse(uriString) : null, name, checkSha256);
+				ChanManager.Fingerprints checkFingerprints = source.readByte() != 0
+						? ChanManager.Fingerprints.CREATOR.createFromParcel(source) : null;
+				return new DownloadItem(chanName, uriString != null ? Uri.parse(uriString) : null, name,
+						checkSha256, checkFingerprints);
 			}
 		};
 
@@ -1527,7 +1532,7 @@ public class DownloadService extends BaseService implements ReadFileTask.Callbac
 				String path = intent.getStringExtra(EXTRA_FILE_PATH);
 				boolean allowWrite = intent.getBooleanExtra(EXTRA_ALLOW_WRITE, false);
 				DataFile file = targetString != null && path != null
-						? DataFile.obtain(context, DataFile.Target.valueOf(targetString), path) : null;
+						? DataFile.obtain(DataFile.Target.valueOf(targetString), path) : null;
 				// Broadcast receivers can't bind to services
 				ServiceConnection[] connection = {null};
 				connection[0] = new ServiceConnection() {

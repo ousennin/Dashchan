@@ -25,7 +25,6 @@ import android.widget.EditText;
 import android.widget.FrameLayout;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
-import android.widget.ProgressBar;
 import android.widget.RadioButton;
 import android.widget.RadioGroup;
 import android.widget.ScrollView;
@@ -36,6 +35,7 @@ import androidx.lifecycle.MutableLiveData;
 import androidx.recyclerview.widget.RecyclerView;
 import chan.content.Chan;
 import chan.content.ChanConfiguration;
+import chan.content.ChanLocator;
 import chan.content.ChanManager;
 import chan.util.CommonUtils;
 import chan.util.StringUtils;
@@ -77,6 +77,7 @@ import com.mishiranu.dashchan.widget.PostsLayoutManager;
 import com.mishiranu.dashchan.widget.ProgressDialog;
 import com.mishiranu.dashchan.widget.SafePasteEditText;
 import com.mishiranu.dashchan.widget.ThemeEngine;
+import com.mishiranu.dashchan.widget.ViewFactory;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
@@ -209,16 +210,10 @@ public class DialogUnit {
 				setAnimationCacheEnabled.run();
 			}
 			recyclerView.setMotionEventSplittingEnabled(false);
-			recyclerView.setClipToPadding(false);
 			recyclerView.setVerticalScrollBarEnabled(true);
-			FrameLayout progress = new FrameLayout(content.getContext());
-			content.addView(progress, FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT);
+			recyclerView.setClipToPadding(false);
+			View progress = ViewFactory.createProgressLayout(content);
 			progress.setPadding(0, (int) (60f * density), 0, (int) (60f * density));
-			progress.setVisibility(View.GONE);
-			ProgressBar progressBar = new ProgressBar(progress.getContext());
-			progress.addView(progressBar, FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT);
-			((FrameLayout.LayoutParams) progressBar.getLayoutParams()).gravity = Gravity.CENTER;
-			ThemeEngine.applyStyle(progressBar);
 			int dividerPadding = (int) (12f * density);
 			recyclerView.setLayoutManager(new PostsLayoutManager(recyclerView.getContext()));
 			provider.uiManager.view().bindThreadsPostRecyclerView(recyclerView);
@@ -269,7 +264,10 @@ public class DialogUnit {
 
 		public void saveState(View view) {
 			DialogHolder<?> holder = (DialogHolder<?>) view.getTag();
-			factory.listPosition = ListPosition.obtain(holder.recyclerView, null);
+			ListPosition listPosition = ListPosition.obtain(holder.recyclerView, null);
+			if (listPosition != null) {
+				factory.listPosition = listPosition;
+			}
 		}
 
 		public boolean isScrolledToTop(View view) {
@@ -1469,7 +1467,12 @@ public class DialogUnit {
 		}
 		state.archiveChanName = archiveChanName;
 		state.options = archivation.options;
-		showPerformSendDialog(fragmentManager, state, null, null, null, posts, true);
+		state.archiveQueryOnly = archivation.queryOnly;
+		if (state.isArchiveSimpleQueryOnly()) {
+			startMultifunctionalProcess(fragmentManager, state, null, null, null);
+		} else {
+			showPerformSendDialog(fragmentManager, state, null, null, null, posts, true);
+		}
 	}
 
 	private static void showPerformSendDialog(FragmentManager fragmentManager,
@@ -1512,7 +1515,11 @@ public class DialogUnit {
 				editText.setSelection(defaultText.length());
 			}
 			if (state.operation == SendMultifunctionalTask.Operation.DELETE) {
-				editText.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD);
+				editText.setHint(R.string.password);
+				editText.setInputType(InputType.TYPE_CLASS_TEXT);
+				ViewUtils.applyMonospaceTypeface(editText);
+			} else if (state.operation == SendMultifunctionalTask.Operation.REPORT) {
+				editText.setHint(R.string.reason);
 			}
 		} else {
 			editText = null;
@@ -1636,7 +1643,8 @@ public class DialogUnit {
 		new InstanceDialog(fragmentManager, null, provider -> {
 			Context context = provider.getContext();
 			ProgressDialog dialog = new ProgressDialog(context, null);
-			dialog.setMessage(context.getString(R.string.sending__ellipsis));
+			dialog.setMessage(context.getString(state.archiveQueryOnly
+					? R.string.loading__ellipsis : R.string.sending__ellipsis));
 			MultifunctionalViewModel viewModel = provider.getViewModel(MultifunctionalViewModel.class);
 			if (!viewModel.hasTaskOrValue()) {
 				SendMultifunctionalTask task = new SendMultifunctionalTask(viewModel.callback,
@@ -1657,13 +1665,21 @@ public class DialogUnit {
 						case ARCHIVE: {
 							if (archiveThreadNumber != null) {
 								String chanName = state.archiveChanName;
-								FavoritesStorage.getInstance().add(chanName, archiveBoardName,
-										archiveThreadNumber, state.archiveThreadTitle);
+								ChanLocator.NavigationData navigationData = new ChanLocator
+										.NavigationData(ChanLocator.NavigationData.Target.POSTS,
+										archiveBoardName, archiveThreadNumber, null, null);
 								UiManager uiManager = UiManager.extract(provider);
-								ClickableToast.show(context.getString(R.string.completed), null,
-										new ClickableToast.Button(R.string.open_thread, false,
-												() -> uiManager.navigator().navigatePosts(chanName, archiveBoardName,
-														archiveThreadNumber, null, state.archiveThreadTitle)));
+								if (state.archiveQueryOnly) {
+									uiManager.navigator().navigateTargetAllowReturn(chanName, navigationData);
+								} else {
+									FavoritesStorage.getInstance().add(chanName, archiveBoardName,
+											archiveThreadNumber, state.archiveThreadTitle, false);
+									ClickableToast.show(context.getString(R.string.completed), null,
+											new ClickableToast.Button(R.string.open_thread, false, () -> uiManager
+													.navigator().navigateTargetAllowReturn(chanName, navigationData)));
+								}
+							} else if (state.archiveQueryOnly) {
+								ClickableToast.show(R.string.invalid_server_response);
 							} else {
 								ClickableToast.show(R.string.completed);
 							}
@@ -1676,7 +1692,9 @@ public class DialogUnit {
 				public void onSendFail(ErrorItem errorItem) {
 					provider.dismiss();
 					ClickableToast.show(errorItem);
-					showPerformSendDialog(provider.getFragmentManager(), state, type, text, options, null, false);
+					if (!state.isArchiveSimpleQueryOnly()) {
+						showPerformSendDialog(provider.getFragmentManager(), state, type, text, options, null, false);
+					}
 				}
 			});
 			return dialog;

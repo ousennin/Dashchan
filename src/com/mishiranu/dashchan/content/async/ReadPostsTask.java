@@ -1,6 +1,7 @@
 package com.mishiranu.dashchan.content.async;
 
 import android.net.Uri;
+import android.util.Log;
 import chan.content.Chan;
 import chan.content.ChanConfiguration;
 import chan.content.ChanPerformer;
@@ -21,14 +22,12 @@ import com.mishiranu.dashchan.content.model.PendingUserPost;
 import com.mishiranu.dashchan.content.model.Post;
 import com.mishiranu.dashchan.content.model.PostItem;
 import com.mishiranu.dashchan.content.model.PostNumber;
-import com.mishiranu.dashchan.util.Log;
 import java.io.IOException;
 import java.net.HttpURLConnection;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.HashSet;
-import java.util.Iterator;
 import java.util.List;
 import java.util.Set;
 import java.util.TreeMap;
@@ -112,19 +111,17 @@ public class ReadPostsTask extends HttpHolderTask<Void, ReadPostsTask.Result> {
 		boolean temporary = chan.configuration.getOption(ChanConfiguration.OPTION_LOCAL_MODE);
 		PagesDatabase.ThreadKey threadKey = new PagesDatabase.ThreadKey(chan.name, boardName, threadNumber);
 		PagesDatabase.Meta meta = PagesDatabase.getInstance().getMeta(threadKey, temporary);
+		PostNumber lastExistingPostNumber = PagesDatabase.getInstance().getLastExistingPostNumber(threadKey);
 		UpdateMeta updateMeta = null;
 		PostNumber originalPostNumber;
-		PostNumber lastExistingPostNumber;
 		boolean allowPartialThreadLoading;
 		if (loadFullThread) {
 			originalPostNumber = null;
-			lastExistingPostNumber = null;
 			allowPartialThreadLoading = false;
 		} else {
-			PagesDatabase.ThreadSummary threadSummary = PagesDatabase.getInstance().getThreadSummary(threadKey);
-			originalPostNumber = threadSummary.originalPostNumber;
-			lastExistingPostNumber = threadSummary.lastExistingPostNumber;
-			allowPartialThreadLoading = !threadSummary.cyclical ||
+			Post originalPost = PagesDatabase.getInstance().getOriginalPost(threadKey);
+			originalPostNumber = originalPost != null ? originalPost.number : null;
+			allowPartialThreadLoading = originalPost == null || !originalPost.isCyclical() ||
 					Preferences.getCyclicalRefreshMode() == Preferences.CyclicalRefreshMode.DEFAULT;
 		}
 		boolean partial = !loadFullThread && allowPartialThreadLoading && Preferences.isPartialThreadLoading(chan);
@@ -148,8 +145,7 @@ public class ReadPostsTask extends HttpHolderTask<Void, ReadPostsTask.Result> {
 					throw HttpException.createNotFoundException();
 				}
 				if (!chan.name.equals(target.chanName) || target.threadNumber == null) {
-					Log.persistent().write(Log.TYPE_ERROR, Log.DISABLE_QUOTES,
-							"Only local thread redirects allowed");
+					Log.e("ReadPostsTask", "Only local thread redirects allowed");
 					updateMeta = new UpdateMeta(false, true);
 					return new Result.Fail(new ErrorItem(ErrorItem.Type.INVALID_DATA_FORMAT));
 				} else if (CommonUtils.equals(boardName, target.boardName) &&
@@ -199,23 +195,17 @@ public class ReadPostsTask extends HttpHolderTask<Void, ReadPostsTask.Result> {
 			HashSet<PendingUserPost> pendingUserPosts = this.pendingUserPosts;
 			HashSet<PendingUserPost> removedPendingUserPosts = null;
 			if (pendingUserPosts != null && !pendingUserPosts.isEmpty()) {
-				for (Post post : posts) {
-					if (pendingUserPosts.isEmpty()) {
-						break;
-					}
-					Iterator<PendingUserPost> iterator = pendingUserPosts.iterator();
-					while (iterator.hasNext()) {
-						PendingUserPost pendingUserPost = iterator.next();
-						if (pendingUserPost.isUserPost(post, post.number.equals(originalPostNumber))) {
-							iterator.remove();
-							if (removedPendingUserPosts == null) {
-								removedPendingUserPosts = new HashSet<>();
-							}
-							removedPendingUserPosts.add(pendingUserPost);
-							CommonDatabase.getInstance().getPosts().setFlags(false, chan.name,
-									boardName, threadNumber, post.number, PostItem.HideState.UNDEFINED, true);
-							break;
+				boolean firstPostIsOriginal = posts.get(0).number.equals(originalPostNumber);
+				for (PendingUserPost pendingUserPost : pendingUserPosts) {
+					PostNumber postNumber = pendingUserPost.findUserPost(posts,
+							lastExistingPostNumber, firstPostIsOriginal);
+					if (postNumber != null) {
+						if (removedPendingUserPosts == null) {
+							removedPendingUserPosts = new HashSet<>();
 						}
+						removedPendingUserPosts.add(pendingUserPost);
+						CommonDatabase.getInstance().getPosts().setFlags(false, chan.name,
+								boardName, threadNumber, postNumber, PostItem.HideState.UNDEFINED, true);
 					}
 				}
 			}

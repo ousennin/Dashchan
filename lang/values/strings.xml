@@ -41,7 +41,6 @@
 	<string name="board">Board</string>
 	<string name="board_doesnt_exist">The board doesn\'t exist</string>
 	<string name="boards">Boards</string>
-	<string name="build_version">Build version</string>
 	<string name="bump_limit">Bump limit</string>
 	<string name="cache_is_unavailable">Cache is unavailable</string>
 	<string name="cache_size">Cache size</string>
@@ -102,6 +101,7 @@
 	<string name="crop_thumbnails__summary">Thumbnails will fit square</string>
 	<string name="cyclical_thread">Cyclical thread</string>
 	<string name="cyclical_threads_refresh_mode">Cyclical threads refresh mode</string>
+	<string name="database">Database</string>
 	<string name="date_created">Date created</string>
 	<string name="ddos_protection_bypass_failed">DDoS-protection bypass failed</string>
 	<string name="default_name_cant_be_hidden">Default name can\'t be hidden</string>
@@ -478,6 +478,7 @@
 	<string name="threads_will_be_deleted__sentence">The following threads will be deleted.</string>
 	<string name="thumbnail_scale">Thumbnail scale</string>
 	<string name="thumbnails">Thumbnails</string>
+	<string name="timeout_sec">Timeout (sec.)</string>
 	<string name="today">Today</string>
 	<string name="too_few_meaningful_words">Too few meaningful words</string>
 	<string name="too_many_attachments">Too many attachments</string>
@@ -498,7 +499,6 @@
 	<string name="update_reminder__sentence">You can track downloading progress in notification bar.\n\nYou can install
 		applications when download finishes.</string>
 	<string name="updates">Updates</string>
-	<string name="updates__genitive">Updates</string>
 	<string name="updates_available__genitive">Updates available</string>
 	<string name="use_built_in_video_player">Use built-in video player</string>
 	<string name="use_built_in_video_player__summary">Play WebM video attachments</string>
@@ -516,6 +516,7 @@
 	<string name="validation_completed">Validation completed</string>
 	<string name="verify_certificate">Verify certificate</string>
 	<string name="verify_certificate__summary">Connection will be terminated if the certificate is not valid</string>
+	<string name="version">Version</string>
 	<string name="vibration">Vibration</string>
 	<string name="video_player">Video player</string>
 	<string name="view__verb">View</string>

@@ -16,7 +16,6 @@ import android.os.Bundle;
 import android.os.SystemClock;
 import android.view.LayoutInflater;
 import android.view.Menu;
-import android.view.MenuInflater;
 import android.view.MenuItem;
 import android.view.View;
 import android.view.ViewGroup;
@@ -37,6 +36,7 @@ import com.mishiranu.dashchan.content.Preferences;
 import com.mishiranu.dashchan.util.AnimationUtils;
 import com.mishiranu.dashchan.util.NavigationUtils;
 import com.mishiranu.dashchan.util.ResourceUtils;
+import com.mishiranu.dashchan.util.ViewUtils;
 import com.mishiranu.dashchan.util.WebViewUtils;
 import com.mishiranu.dashchan.widget.ClickableToast;
 import com.mishiranu.dashchan.widget.ExpandedLayout;
@@ -62,7 +62,7 @@ public class BrowserFragment extends ContentFragment implements DownloadListener
 	@Override
 	public View onCreateView(@NonNull LayoutInflater inflater, ViewGroup container, Bundle savedInstanceState) {
 		ExpandedLayout layout = new ExpandedLayout(container.getContext(), true);
-		webView = new WebView(layout.getContext());
+		webView = new WebView(layout.getContext().getApplicationContext());
 		layout.addView(webView, FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT);
 		progressView = new ProgressView(layout.getContext());
 		float density = ResourceUtils.obtainDensity(this);
@@ -116,6 +116,9 @@ public class BrowserFragment extends ContentFragment implements DownloadListener
 		((FragmentHandler) requireActivity()).setNavigationAreaLocked(navigationDrawerLocker, false);
 		webView.stopLoading();
 		webView.destroy();
+		// Remove references to fragment and parent view since WebView bugs may cause memory leaks
+		webView.setOnLongClickListener(null);
+		ViewUtils.removeFromParent(webView);
 		webView = null;
 		progressView = null;
 	}
@@ -124,7 +127,6 @@ public class BrowserFragment extends ContentFragment implements DownloadListener
 	public void onActivityCreated(Bundle savedInstanceState) {
 		super.onActivityCreated(savedInstanceState);
 
-		setHasOptionsMenu(true);
 		((FragmentHandler) requireActivity()).setTitleSubtitle(getString(R.string.web_browser), null);
 		if (savedInstanceState == null) {
 			WebViewUtils.clearAll(webView);
@@ -154,7 +156,7 @@ public class BrowserFragment extends ContentFragment implements DownloadListener
 	}
 
 	@Override
-	public void onCreateOptionsMenu(@NonNull Menu menu, @NonNull MenuInflater inflater) {
+	public void onCreateOptionsMenu(Menu menu, boolean primary) {
 		menu.add(0, R.id.menu_reload, 0, R.string.reload)
 				.setIcon(((FragmentHandler) requireActivity()).getActionBarIcon(R.attr.iconActionRefresh))
 				.setShowAsAction(MenuItem.SHOW_AS_ACTION_IF_ROOM);

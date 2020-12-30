@@ -44,6 +44,7 @@ import com.mishiranu.dashchan.util.NavigationUtils;
 import com.mishiranu.dashchan.util.ResourceUtils;
 import com.mishiranu.dashchan.widget.ClickableToast;
 import com.mishiranu.dashchan.widget.DividerItemDecoration;
+import com.mishiranu.dashchan.widget.ListPosition;
 import com.mishiranu.dashchan.widget.PaddedRecyclerView;
 import com.mishiranu.dashchan.widget.PullableWrapper;
 import com.mishiranu.dashchan.widget.SummaryLayout;
@@ -136,6 +137,7 @@ public class ThreadsPage extends ListPage implements ThreadsAdapter.Callback,
 
 		InitRequest initRequest = getInitRequest();
 		ReadViewModel readViewModel = getViewModel(ReadViewModel.class);
+		ListPosition listPosition = takeListPosition();
 		if (initRequest.errorItem != null) {
 			switchError(initRequest.errorItem);
 		} else {
@@ -144,7 +146,9 @@ public class ThreadsPage extends ListPage implements ThreadsAdapter.Callback,
 				load = false;
 				adapter.setItems(retainableExtra.cachedPostItems,
 						retainableExtra.startPageNumber == PAGE_NUMBER_CATALOG);
-				restoreListPosition();
+				if (listPosition != null) {
+					listPosition.apply(recyclerView);
+				}
 				if (retainableExtra.dialogsState != null) {
 					uiManager.dialog().restoreState(adapter.getConfigurationSet(), retainableExtra.dialogsState);
 					retainableExtra.dialogsState.dropState();
@@ -337,16 +341,12 @@ public class ThreadsPage extends ListPage implements ThreadsAdapter.Callback,
 		RetainableExtra retainableExtra = getRetainableExtra(RetainableExtra.FACTORY);
 		Chan chan = getChan();
 		ChanConfiguration.Board board = chan.configuration.safe().obtainBoard(page.boardName);
-		boolean search = board.allowSearch;
-		boolean catalog = board.allowCatalog;
-		boolean catalogSearch = catalog && board.allowCatalogSearch;
-		boolean allowSearch = search || catalogSearch;
-		this.allowSearch = allowSearch;
+		this.allowSearch = board.allowSearch;
 		boolean isCatalogOpen = retainableExtra.startPageNumber == PAGE_NUMBER_CATALOG;
-		menu.findItem(R.id.menu_search).setTitle(allowSearch ? R.string.search : R.string.filter);
-		menu.findItem(R.id.menu_catalog).setVisible(catalog && !isCatalogOpen);
-		menu.findItem(R.id.menu_pages).setVisible(catalog && isCatalogOpen);
-		menu.findItem(R.id.menu_sorting).setVisible(catalog && isCatalogOpen);
+		menu.findItem(R.id.menu_search).setTitle(board.allowSearch ? R.string.search : R.string.filter);
+		menu.findItem(R.id.menu_catalog).setVisible(board.allowCatalog && !isCatalogOpen);
+		menu.findItem(R.id.menu_pages).setVisible(board.allowCatalog && isCatalogOpen);
+		menu.findItem(R.id.menu_sorting).setVisible(board.allowCatalog && isCatalogOpen);
 		menu.findItem(Preferences.getCatalogSort().menuItemId).setChecked(true);
 		menu.findItem(R.id.menu_archive).setVisible(board.allowArchive);
 		menu.findItem(R.id.menu_new_thread).setVisible(board.allowPosting);

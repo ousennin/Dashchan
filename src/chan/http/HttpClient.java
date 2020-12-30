@@ -18,7 +18,6 @@ import com.mishiranu.dashchan.content.Preferences;
 import com.mishiranu.dashchan.content.model.ErrorItem;
 import com.mishiranu.dashchan.content.net.RelayBlockResolver;
 import com.mishiranu.dashchan.util.IOUtils;
-import com.mishiranu.dashchan.util.Log;
 import java.io.BufferedInputStream;
 import java.io.BufferedOutputStream;
 import java.io.ByteArrayInputStream;
@@ -193,7 +192,7 @@ public class HttpClient {
 					proxy = new Proxy(socks ? Proxy.Type.SOCKS : Proxy.Type.HTTP,
 							InetSocketAddress.createUnresolved(host, port));
 				} catch (Exception e) {
-					Log.persistent().stack(e);
+					e.printStackTrace();
 				}
 			}
 			return proxy;
@@ -234,14 +233,18 @@ public class HttpClient {
 	private ProxyData getProxyData(Map<String, String> map) {
 		if (map != null) {
 			String host = map.get(Preferences.SUB_KEY_PROXY_HOST);
-			int port;
-			try {
-				port = Integer.parseInt(map.get(Preferences.SUB_KEY_PROXY_PORT));
-			} catch (Exception e) {
-				return null;
+			if (!StringUtils.isEmpty(host)) {
+				int port;
+				try {
+					port = Integer.parseInt(map.get(Preferences.SUB_KEY_PROXY_PORT));
+				} catch (Exception e) {
+					port = -1;
+				}
+				if (port > 0) {
+					boolean socks = Preferences.VALUE_PROXY_TYPE_SOCKS.equals(map.get(Preferences.SUB_KEY_PROXY_TYPE));
+					return new ProxyData(socks, host, port);
+				}
 			}
-			boolean socks = Preferences.VALUE_PROXY_TYPE_SOCKS.equals(map.get(Preferences.SUB_KEY_PROXY_TYPE));
-			return new ProxyData(socks, host, port);
 		}
 		return null;
 	}
@@ -356,7 +359,8 @@ public class HttpClient {
 	}
 
 	@SuppressWarnings("CharsetObjectCanBeUsed")
-	private void encodeUriBufferPart(StringBuilder uriStringBuilder, char[] chars, int i, int start, boolean ascii) {
+	private static void encodeUriBufferPart(StringBuilder uriStringBuilder,
+			char[] chars, int i, int start, boolean ascii) {
 		if (!ascii) {
 			try {
 				for (byte b : new String(chars, start, i - start).getBytes("UTF-8")) {
@@ -372,7 +376,7 @@ public class HttpClient {
 		}
 	}
 
-	private void encodeUriAppend(StringBuilder uriStringBuilder, String part) {
+	private static void encodeUriAppend(StringBuilder uriStringBuilder, String part) {
 		char[] chars = part.toCharArray();
 		boolean ascii = true;
 		int start = 0;
@@ -388,7 +392,7 @@ public class HttpClient {
 		encodeUriBufferPart(uriStringBuilder, chars, chars.length, start, ascii);
 	}
 
-	URL encodeUri(Uri uri) throws MalformedURLException {
+	public static URL encodeUri(Uri uri) throws MalformedURLException {
 		StringBuilder uriStringBuilder = new StringBuilder();
 		uriStringBuilder.append(StringUtils.emptyIfNull(uri.getScheme())).append("://");
 		String host = IDN.toASCII(StringUtils.emptyIfNull(uri.getHost()));
@@ -441,6 +445,7 @@ public class HttpClient {
 			connection.setReadTimeout(request.readTimeout);
 			connection.setInstanceFollowRedirects(false);
 			connection.setRequestProperty("Connection", request.keepAlive ? "keep-alive" : "close");
+			String userAgent = null;
 			boolean userAgentSet = false;
 			boolean acceptEncodingSet = false;
 			if (request.headers != null) {
@@ -450,6 +455,7 @@ public class HttpClient {
 					}
 					connection.setRequestProperty(header.first, header.second);
 					if ("User-Agent".equalsIgnoreCase(header.first)) {
+						userAgent = header.first;
 						userAgentSet = true;
 					}
 					if ("Accept-Encoding".equalsIgnoreCase(header.first)) {
@@ -458,8 +464,8 @@ public class HttpClient {
 				}
 			}
 			if (!userAgentSet) {
-				connection.setRequestProperty("User-Agent", AdvancedPreferences
-						.getUserAgent(request.holder.chan.name));
+				userAgent = AdvancedPreferences.getUserAgent(request.holder.chan.name);
+				connection.setRequestProperty("User-Agent", userAgent);
 			}
 			if (!acceptEncodingSet) {
 				StringBuilder acceptEncoding = new StringBuilder();
@@ -473,8 +479,11 @@ public class HttpClient {
 				}
 				connection.setRequestProperty("Accept-Encoding", acceptEncoding.toString());
 			}
+			RelayBlockResolver.Identifier resolverIdentifier = new RelayBlockResolver
+					.Identifier(userAgent, !userAgentSet);
 			CookieBuilder cookieBuilder = request.checkRelayBlock == HttpRequest.CheckRelayBlock.SKIP
-					? request.cookieBuilder : obtainModifiedCookieBuilder(request.cookieBuilder, request.holder.chan);
+					? request.cookieBuilder : obtainModifiedCookieBuilder(request.cookieBuilder,
+					request.holder.chan, resolverIdentifier);
 			if (cookieBuilder != null) {
 				connection.setRequestProperty("Cookie", cookieBuilder.build());
 			}
@@ -507,12 +516,11 @@ public class HttpClient {
 						connection.setFixedLengthStreamingMode((int) contentLength);
 					}
 				}
-				ClientOutputStream output = new ClientOutputStream(new BufferedOutputStream(connection
-						.getOutputStream(), 1024), session, forceGet ? null : request.outputListener, contentLength);
-				entity.write(output);
-				output.flush();
-				output.close();
-				session.checkInterrupted();
+				try (ClientOutputStream output = new ClientOutputStream(new BufferedOutputStream(connection
+						.getOutputStream(), 1024), session, forceGet ? null : request.outputListener, contentLength)) {
+					entity.write(output);
+					output.flush();
+				}
 			}
 
 			int responseCode;
@@ -527,6 +535,7 @@ public class HttpClient {
 					throw e;
 				}
 			}
+			session.closeInput = true;
 			HttpValidator resultValidator = HttpValidator.obtain(connection);
 			String contentType = connection.getHeaderField("Content-Type");
 			String charsetName = extractCharsetName(contentType);
@@ -551,15 +560,8 @@ public class HttpClient {
 						try {
 							action = redirectHandler.onRedirect(response);
 						} catch (AbstractMethodError | NoSuchMethodError e) {
-							synchronized (HttpRequest.RedirectHandler.class) {
-								HttpRequest.RedirectHandler.Action.resetAll();
-								action = redirectHandler.onRedirectReached(responseCode,
-										requestedUri, redirectedUri, request.holder);
-								Uri overriddenRedirectedUri = action.redirectedUri;
-								if (overriddenRedirectedUri != null) {
-									session.redirectedUri = overriddenRedirectedUri;
-								}
-							}
+							action = redirectHandler.onRedirectReached(responseCode,
+									requestedUri, redirectedUri, request.holder);
 						}
 					} catch (HttpException e) {
 						session.disconnectAndClear();
@@ -603,9 +605,9 @@ public class HttpClient {
 					requestMethod != HttpRequest.RequestMethod.HEAD) {
 				RelayBlockResolver.Result result;
 				try {
-					result = RelayBlockResolver.getInstance()
-							.checkResponse(request.holder.chan, requestedUri, request.holder, response,
-									request.checkRelayBlock == HttpRequest.CheckRelayBlock.RESOLVE);
+					result = RelayBlockResolver.getInstance().checkResponse(request.holder.chan,
+							requestedUri, request.holder, response, resolverIdentifier,
+							request.checkRelayBlock == HttpRequest.CheckRelayBlock.RESOLVE);
 				} catch (InterruptedException e) {
 					throw new InterruptedHttpException();
 				}
@@ -632,7 +634,7 @@ public class HttpClient {
 			if (isConnectionReset(e)) {
 				// Sometimes server closes the socket, but client is still trying to use it
 				if (session.nextAttempt()) {
-					Log.persistent().stack(e);
+					e.printStackTrace();
 					throw new RetryException();
 				}
 			}
@@ -659,6 +661,14 @@ public class HttpClient {
 		}
 	}
 
+	InputStream getInput(HttpURLConnection connection) throws IOException {
+		try {
+			return connection.getInputStream();
+		} catch (FileNotFoundException e) {
+			return connection.getErrorStream();
+		}
+	}
+
 	InputStream open(HttpResponse response) throws HttpException {
 		if (response.session == null) {
 			throw new IllegalStateException();
@@ -669,38 +679,42 @@ public class HttpClient {
 			if (connection == null) {
 				throw new InterruptedHttpException();
 			}
-			response.session.checkInterrupted();
-			InputStream input;
+			InputStream input = getInput(connection);
+			boolean success = false;
 			try {
-				input = connection.getInputStream();
-			} catch (FileNotFoundException e) {
-				input = connection.getErrorStream();
+				if (input == null) {
+					throw new HttpException(ErrorItem.Type.EMPTY_RESPONSE, false, false);
+				}
+				response.session.checkInterrupted();
+				input = new BufferedInputStream(input, 8192);
+				switch (Encoding.get(connection)) {
+					case IDENTITY: {
+						break;
+					}
+					case GZIP: {
+						input = new GZIPInputStream(input);
+						break;
+					}
+					case DEFLATE: {
+						input = new DeflateInputStream(input);
+						break;
+					}
+					case BROTLI: {
+						input = new BrotliInputStream(input);
+						break;
+					}
+					default: {
+						throw new HttpException(ErrorItem.Type.DOWNLOAD, false, false);
+					}
+				}
+				success = true;
+				return new ClientInputStream(input, response.session);
+			} finally {
+				response.session.closeInput = false;
+				if (!success) {
+					IOUtils.close(input);
+				}
 			}
-			if (input == null) {
-				throw new HttpException(ErrorItem.Type.EMPTY_RESPONSE, false, false);
-			}
-			input = new BufferedInputStream(input, 8192);
-			switch (Encoding.get(connection)) {
-				case IDENTITY: {
-					break;
-				}
-				case GZIP: {
-					input = new GZIPInputStream(input);
-					break;
-				}
-				case DEFLATE: {
-					input = new DeflateInputStream(input);
-					break;
-				}
-				case BROTLI: {
-					input = new BrotliInputStream(input);
-					break;
-				}
-				default: {
-					throw new HttpException(ErrorItem.Type.DOWNLOAD, false, false);
-				}
-			}
-			return new ClientInputStream(input, response.session);
 		} catch (InterruptedHttpException e) {
 			throw e.toHttp();
 		} catch (IOException e) {
@@ -708,8 +722,9 @@ public class HttpClient {
 		}
 	}
 
-	CookieBuilder obtainModifiedCookieBuilder(CookieBuilder cookieBuilder, Chan chan) {
-		Map<String, String> cookies = RelayBlockResolver.getInstance().getCookies(chan);
+	CookieBuilder obtainModifiedCookieBuilder(CookieBuilder cookieBuilder, Chan chan,
+			RelayBlockResolver.Identifier resolverIdentifier) {
+		Map<String, String> cookies = RelayBlockResolver.getInstance().getCookies(chan, resolverIdentifier);
 		if (!cookies.isEmpty()) {
 			cookieBuilder = new CookieBuilder(cookieBuilder);
 			for (Map.Entry<String, String> cookie : cookies.entrySet()) {
@@ -774,11 +789,11 @@ public class HttpClient {
 		return message != null ? message : originalMessage;
 	}
 
-	static HttpException transformIOException(IOException exception) {
+	public static HttpException transformIOException(IOException exception) {
 		ErrorItem.Type errorType;
 		try {
 			errorType = getErrorTypeForException(exception);
-			Log.persistent().stack(exception);
+			exception.printStackTrace();
 		} catch (InterruptedIOException e) {
 			errorType = null;
 		}

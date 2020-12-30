@@ -164,13 +164,6 @@ public abstract class ListPage implements LifecycleOwner, PullableWrapper.PullCa
 		return listPosition;
 	}
 
-	protected final void restoreListPosition() {
-		ListPosition listPosition = takeListPosition();
-		if (listPosition != null) {
-			listPosition.apply(recyclerView);
-		}
-	}
-
 	protected final InitRequest getInitRequest() {
 		return initRequest != null ? initRequest : InitRequest.EMPTY_REQUEST;
 	}
@@ -194,7 +187,7 @@ public abstract class ListPage implements LifecycleOwner, PullableWrapper.PullCa
 
 	protected final void updateOptionsMenu() {
 		if (isRunning()) {
-			callback.updateOptionsMenu();
+			callback.invalidateOptionsMenu();
 		}
 	}
 
@@ -393,7 +386,7 @@ public abstract class ListPage implements LifecycleOwner, PullableWrapper.PullCa
 
 	public interface Callback {
 		void notifyTitleChanged();
-		void updateOptionsMenu();
+		void invalidateOptionsMenu();
 		void setCustomSearchView(View view);
 		void clearSearchFocus();
 		Context getToolbarContext();
